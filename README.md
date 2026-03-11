@@ -1,232 +1,224 @@
 # OpenClaw Context Safe Plugin
 
-## 中文版
+## 中文说明
 
-`context-safe` 是一个面向 OpenClaw 的独立插件，用来把你原来落在本地网关里的 tool-result 裁剪策略插件化。
+`context-safe` 是一个面向官方 OpenClaw 的独立插件，目标是在不修改 OpenClaw 核心代码的前提下，把 fork 里的 context-safe 行为迁移成可安装、可卸载、可独立维护的插件。
 
-当前版本做三件事：
+这个插件兼容官方 `OpenClaw >= 2026.3.8`，并且只使用官方已经提供的扩展点：
 
-- 作为 `contextEngine`，在 `assemble()` 阶段对过大的 tool result 做上下文裁剪
-- 在 `before_tool_call` 阶段给高噪声工具补默认安全参数
-- 在 `tool_result_persist` 阶段移除超大 `details`，避免 transcript 持久化继续膨胀
+- `before_tool_call`
+- `tool_result_persist`
+- `plugins.slots.contextEngine`
 
-它适合的场景：
+重点说明：官方 `v2026.3.8` 没有你 fork 里那种给 `exec` / `web_fetch` 增加的 `excludeFromContext` 参数。这个插件不是假装官方已经有这个参数，而是在官方插件能力范围内，把“效果”复现出来。
 
-- 本地网关长期运行，tool 输出很多，容易把上下文打爆
-- 你想保留官方正式版 OpenClaw，不再维护核心代码 fork
-- 你希望把“工具输出裁剪”和“上下文安全默认值”收敛到一个可安装插件里
+### 这个插件能做什么
 
-当前策略摘要：
+- 给 `read` 自动补默认安全参数：`offset=1`、`limit=200`
+- 给 `web_fetch` 自动补默认安全参数：`maxChars=12000`
+- 在 `tool_result_persist` 阶段把超大的 `exec` / `bash` / `web_fetch` / `read` 结果改写成“小预览 + artifact 路径”
+- 把过大的 `details` 压缩成有界元数据，避免 transcript 被大对象撑爆
+- 在 `contextEngine.assemble()` 阶段再次做 tool result 截断和上下文压缩，防止单条工具结果吞掉整个 context window
 
-- `read`：默认补 `offset=1`、`limit=200`
-- `exec` / `bash`：默认补 `excludeFromContext=true`
-- `web_fetch`：默认补 `excludeFromContext=true`、`maxChars=12000`
-- 超大 tool result：优先截断文本；如果整体上下文仍超预算，再替换成紧凑 notice
-- 超大 `tool_result.details`：持久化前移除
+### 它为什么能省 Token
 
-已知边界：
+核心原因不是换了更便宜的模型，而是减少了被重复塞进上下文的无价值工具输出。
 
-- 这是一个 `assemble-only` 的 context engine，`compact()` 不接管官方 compaction 流程
-- 当前裁剪策略偏文本优先，对复杂多模态 tool result 只做保守处理
-- 目标是最小侵入接入官方版本，不是重新实现 OpenClaw 全套上下文引擎
+这个插件从四个层面省 token：
 
-## 安装
+- 大工具输出不会完整留在 transcript 里
+  超长结果会被写入 artifact 文件，transcript 里只保留短预览和恢复提示。
+- `details` 不再无限膨胀
+  原始大对象会被压缩成小型元数据，避免下一轮又把大 JSON 带回上下文。
+- 官方上下文组装前会再做一次预算控制
+  `contextEngine` 会对大 tool result 做第二次裁剪和必要的 compact。
+- 未来轮次看到的是“怎么继续追查”，不是整段原始噪声
+  对模型更有价值，也更稳定。
 
-前提：
+实际效果通常是：
 
-- OpenClaw `>= 2026.3.8`
-- 本机能直接运行 `openclaw`
+- 输入 token 更低
+- 工具噪声更不容易把真正的用户意图挤出窗口
+- 长会话更稳定，不容易因为几次大输出就触发严重 compaction
 
-推荐安装方式：
+### 官方命令安装
 
-```bash
-git clone https://github.com/ProgramCaiCai/openclaw-context-safe-plugin.git
-cd openclaw-context-safe-plugin
-python3 scripts/install.py
-```
-
-一键安装：
+推荐直接使用官方命令：
 
 ```bash
-python3 scripts/install.py
-```
-
-这个脚本本质上只调用官方命令：
-
-```bash
-openclaw plugins install --link .
+openclaw plugins install --link /path/to/openclaw-context-safe-plugin
 openclaw config set plugins.entries.context-safe.enabled true
 openclaw config set plugins.slots.contextEngine context-safe
 ```
 
-只看安装动作，不真正执行：
+如果你不想使用 `--link`，也可以直接 copy-install：
 
 ```bash
-python3 scripts/install.py --dry-run
+openclaw plugins install /path/to/openclaw-context-safe-plugin
+openclaw config set plugins.entries.context-safe.enabled true
+openclaw config set plugins.slots.contextEngine context-safe
 ```
 
-使用官方 copy-install 而不是 `--link`：
+安装完成后可以验证：
 
 ```bash
-python3 scripts/install.py --copy
+openclaw plugins info context-safe
+openclaw config get plugins.slots.contextEngine
 ```
 
-只安装插件，不改 slot / config：
+### 官方命令卸载
+
+如果当前 `plugins.slots.contextEngine` 还指向 `context-safe`，先切回官方默认引擎，再卸载插件：
 
 ```bash
-python3 scripts/install.py --no-config
+openclaw config set plugins.slots.contextEngine legacy
+openclaw plugins uninstall context-safe --force
 ```
 
-指定 OpenClaw 可执行文件：
+### Python 一键脚本
+
+仓库里附带了 `scripts/install.py`，但它只是把上面的官方命令串起来执行，不重新发明安装协议。
+
+安装：
 
 ```bash
-python3 scripts/install.py --openclaw-bin /path/to/openclaw
+python3 scripts/install.py
 ```
 
-官方卸载：
+卸载：
 
 ```bash
 python3 scripts/install.py --uninstall
 ```
 
-手动安装：
+只打印将要执行的官方命令：
 
 ```bash
-openclaw plugins install --link .
-openclaw config set plugins.entries.context-safe.enabled true
-openclaw config set plugins.slots.contextEngine context-safe
+python3 scripts/install.py --dry-run
 ```
 
-手动卸载：
+### Artifact 行为
 
-```bash
-openclaw plugins uninstall context-safe --force
+当插件判断某个 tool result 过大时，它会把完整结果写入 artifact 文件，并把 transcript 改写成短预览。
+
+默认 artifact 目录：
+
+```text
+~/.openclaw/artifacts/context-safe/<tool>/
 ```
 
-安装脚本会：
-
-- 优先调用官方 `openclaw plugins install --link`
-- 如果官方返回同名插件已存在，会再调用一次官方 `openclaw plugins uninstall --force` 后重试安装
-- 默认启用 `plugins.entries.context-safe.enabled=true`
-- 默认设置 `plugins.slots.contextEngine=context-safe`
-
-## 为什么这个插件能省 Token
-
-核心原因不是“模型更便宜”，而是“少把无价值工具输出塞进上下文”。
-
-它主要从四个地方省 token：
-
-- `exec` / `bash` / `web_fetch` 默认打 `excludeFromContext=true`
-  大段 shell 输出、网页原文不会默认进入后续对话上下文
-- `contextEngine.assemble()` 会先裁掉超大的 tool result
-  单条工具结果不会无限吞掉窗口，超额部分会变成短 notice
-- `tool_result_persist` 会删掉超大的 `details`
-  避免 transcript 持久化后下轮又把大对象重新带回上下文
-- 给后续真实对话保留 headroom
-  上下文里留下的是“工具干了什么、怎么追查”，不是整段原始噪声
-
-实际效果通常表现为：
-
-- 输入 token 更低
-- 上下文更稳定，不容易因为一两次大工具输出触发 compaction
-- 模型更容易保留真正重要的用户意图和最近推理链
-
-它最适合省 token 的场景：
-
-- `exec` 输出很长
-- `read` / `web_fetch` 经常读大文件、大网页
-- 会话里连续有多轮工具调用
-- 你希望官方 OpenClaw 保持原版，只把裁剪策略外挂出去
-
-## 验证
+如果你想在本地开发或测试时改路径，可以设置：
 
 ```bash
-openclaw plugins info context-safe
-openclaw channels status --probe
+export OPENCLAW_CONTEXT_SAFE_ARTIFACT_DIR=/custom/path
 ```
 
-如果你已经把它装进本地正式版网关，还可以看：
+### 开发与验证
 
 ```bash
-jq '.plugins.slots.contextEngine' ~/.openclaw/openclaw.json
-```
-
-## 开发
-
-```bash
-pnpm install
-pnpm test
-pnpm typecheck
+pnpm exec vitest run --config vitest.config.ts
+pnpm exec tsc -p tsconfig.json --noEmit
 python3 -m py_compile scripts/install.py
 ```
 
-目录结构：
+项目结构：
 
-- `index.ts`: 插件入口
-- `src/context-engine.ts`: 上下文裁剪入口
-- `src/tool-result-policy.ts`: tool result 裁剪策略
-- `src/hooks.ts`: `before_tool_call` / `tool_result_persist` hooks
-- `scripts/install.py`: 一键安装脚本
+- `index.ts`：插件入口
+- `src/hooks.ts`：官方 hook 入口
+- `src/tool-result-persist.ts`：artifact、preview、details 压缩
+- `src/context-engine.ts`：context engine
+- `src/tool-result-policy.ts`：assemble 阶段的 tool result 裁剪策略
+- `scripts/install.py`：官方命令封装脚本
 
----
+## English
 
-## English Version
+`context-safe` is a standalone plugin for official OpenClaw releases. Its purpose is to move fork-only context-safety behavior into an installable, removable, independently maintained plugin without patching OpenClaw core.
 
-`context-safe` is a standalone OpenClaw plugin that turns a local gateway tool-result trimming strategy into an installable extension.
+It is compatible with `OpenClaw >= 2026.3.8` and uses only official extension points:
 
-Current scope:
+- `before_tool_call`
+- `tool_result_persist`
+- `plugins.slots.contextEngine`
 
-- register a `contextEngine` that trims oversized tool results during `assemble()`
-- add safer defaults in `before_tool_call`
-- strip oversized `details` in `tool_result_persist`
+Important detail: official `v2026.3.8` does not expose the fork-only `excludeFromContext` parameter on `exec` or `web_fetch`. This plugin does not pretend that upstream already supports that parameter. Instead, it recreates the outcome by rewriting persisted tool results inside the official plugin surface.
 
-Use it when:
+### What the Plugin Does
 
-- your local gateway accumulates large tool outputs
-- you want to stay on official OpenClaw releases instead of maintaining a core fork
-- you want one installable plugin for tool-result shaping and context-safety defaults
+- adds safe defaults for `read`: `offset=1`, `limit=200`
+- adds a safe default for `web_fetch`: `maxChars=12000`
+- rewrites oversized `exec` / `bash` / `web_fetch` / `read` results during `tool_result_persist` into a short preview plus artifact path
+- compacts oversized `details` into bounded metadata
+- enforces a second tool-result truncation and compaction pass in `contextEngine.assemble()`
 
-Current policy summary:
+### Why It Saves Tokens
 
-- `read`: default `offset=1`, `limit=200`
-- `exec` / `bash`: default `excludeFromContext=true`
-- `web_fetch`: default `excludeFromContext=true`, `maxChars=12000`
-- large tool results: truncate text first, then replace with a compact notice if the full context is still over budget
-- oversized `tool_result.details`: removed before persistence
+The plugin saves tokens by preventing noisy tool output from staying inline in the transcript and getting re-sent to the model over and over.
 
-Known limits:
+It reduces token usage in four ways:
 
-- this is an assemble-only context engine; it does not take over OpenClaw's official compaction path
-- current trimming is text-first and conservative for complex multimodal tool results
-- the goal is minimal-intrusion integration with official OpenClaw, not a full replacement of the upstream context engine
+- large tool results are moved out of the inline transcript
+  Full payloads are written to artifact files and replaced with a short preview plus recovery guidance.
+- oversized `details` are compacted
+  Large JSON blobs do not keep flowing back into future turns.
+- the context engine enforces another budget pass before model execution
+  Oversized tool results are truncated or compacted again during context assembly.
+- future turns keep the actionable trace, not the raw noise
+  The model sees how to continue investigation instead of being forced to ingest the full payload again.
 
-## Install
+Typical effects:
 
-Requirements:
+- lower input token usage
+- better long-session stability
+- less context loss from one or two oversized tool calls
 
-- OpenClaw `>= 2026.3.8`
-- a working `openclaw` binary on the host
+### Official Install Commands
 
-Recommended flow:
-
-```bash
-git clone https://github.com/ProgramCaiCai/openclaw-context-safe-plugin.git
-cd openclaw-context-safe-plugin
-python3 scripts/install.py
-```
-
-Install and enable:
+Preferred installation uses official OpenClaw commands directly:
 
 ```bash
-python3 scripts/install.py
-```
-
-The script only wraps official OpenClaw commands:
-
-```bash
-openclaw plugins install --link .
+openclaw plugins install --link /path/to/openclaw-context-safe-plugin
 openclaw config set plugins.entries.context-safe.enabled true
 openclaw config set plugins.slots.contextEngine context-safe
+```
+
+If you prefer copy-install instead of linking:
+
+```bash
+openclaw plugins install /path/to/openclaw-context-safe-plugin
+openclaw config set plugins.entries.context-safe.enabled true
+openclaw config set plugins.slots.contextEngine context-safe
+```
+
+Verify the install:
+
+```bash
+openclaw plugins info context-safe
+openclaw config get plugins.slots.contextEngine
+```
+
+### Official Uninstall Commands
+
+If the current context engine slot still points to `context-safe`, switch back to the built-in engine first and then uninstall:
+
+```bash
+openclaw config set plugins.slots.contextEngine legacy
+openclaw plugins uninstall context-safe --force
+```
+
+### Python Convenience Script
+
+The repository includes `scripts/install.py`, but it is only a thin wrapper around the official commands above.
+
+Install:
+
+```bash
+python3 scripts/install.py
+```
+
+Uninstall:
+
+```bash
+python3 scripts/install.py --uninstall
 ```
 
 Dry run:
@@ -235,106 +227,35 @@ Dry run:
 python3 scripts/install.py --dry-run
 ```
 
-Use official copy-install instead of `--link`:
+### Artifact Behavior
 
-```bash
-python3 scripts/install.py --copy
+When the plugin decides a persisted tool result is too large, it writes the full payload to an artifact file and rewrites the transcript entry into a short preview.
+
+Default artifact directory:
+
+```text
+~/.openclaw/artifacts/context-safe/<tool>/
 ```
 
-Install without changing config:
+Override it during development or tests with:
 
 ```bash
-python3 scripts/install.py --no-config
+export OPENCLAW_CONTEXT_SAFE_ARTIFACT_DIR=/custom/path
 ```
 
-Use a custom OpenClaw binary:
+### Development and Verification
 
 ```bash
-python3 scripts/install.py --openclaw-bin /path/to/openclaw
-```
-
-Official uninstall:
-
-```bash
-python3 scripts/install.py --uninstall
-```
-
-Manual install:
-
-```bash
-openclaw plugins install --link .
-openclaw config set plugins.entries.context-safe.enabled true
-openclaw config set plugins.slots.contextEngine context-safe
-```
-
-Manual uninstall:
-
-```bash
-openclaw plugins uninstall context-safe --force
-```
-
-The installer:
-
-- prefers the official `openclaw plugins install --link`
-- if OpenClaw reports an existing plugin id, retries with the official `openclaw plugins uninstall --force` first
-- enables `plugins.entries.context-safe.enabled=true`
-- selects `plugins.slots.contextEngine=context-safe`
-
-## Why It Saves Tokens
-
-This plugin does not save tokens by changing model pricing. It saves tokens by keeping low-value tool output out of the next prompt.
-
-Main savings points:
-
-- `exec` / `bash` / `web_fetch` default to `excludeFromContext=true`
-  Long shell output and full web payloads stop flowing into later context by default
-- `contextEngine.assemble()` trims oversized tool results before final prompt assembly
-  A single noisy tool result cannot consume an arbitrary share of the context window
-- `tool_result_persist` removes oversized `details`
-  Large serialized payloads do not keep re-entering future turns through persisted transcripts
-- more headroom stays available for actual conversation and reasoning
-  The context keeps the outcome and recovery hints instead of raw noise
-
-In practice, that usually means:
-
-- lower input-token usage
-- less compaction pressure
-- more stable long-running sessions
-- better retention of user intent and recent reasoning context
-
-It is most useful when:
-
-- `exec` outputs are large
-- `read` / `web_fetch` often pull large files or pages
-- sessions have many consecutive tool calls
-- you want to stay on upstream OpenClaw and move trimming policy into an extension
-
-## Verify
-
-```bash
-openclaw plugins info context-safe
-openclaw channels status --probe
-```
-
-You can also confirm the selected slot with:
-
-```bash
-jq '.plugins.slots.contextEngine' ~/.openclaw/openclaw.json
-```
-
-## Development
-
-```bash
-pnpm install
-pnpm test
-pnpm typecheck
+pnpm exec vitest run --config vitest.config.ts
+pnpm exec tsc -p tsconfig.json --noEmit
 python3 -m py_compile scripts/install.py
 ```
 
-Layout:
+Project layout:
 
 - `index.ts`: plugin entry
-- `src/context-engine.ts`: context trimming entry point
-- `src/tool-result-policy.ts`: tool-result trimming policy
-- `src/hooks.ts`: `before_tool_call` / `tool_result_persist` hooks
-- `scripts/install.py`: one-command installer
+- `src/hooks.ts`: official hook entrypoints
+- `src/tool-result-persist.ts`: artifact writing, previews, and details compaction
+- `src/context-engine.ts`: context engine
+- `src/tool-result-policy.ts`: assemble-time tool-result policy
+- `scripts/install.py`: wrapper around official install commands

@@ -26,6 +26,7 @@
     "README.md",
     "src/context-engine.ts",
     "src/hooks.ts",
+    "src/tool-result-persist.ts",
     "src/tool-result-policy.ts"
   ],
   "scripts": {

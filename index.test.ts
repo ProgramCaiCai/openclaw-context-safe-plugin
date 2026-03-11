@@ -1,5 +1,23 @@
-import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
+
+let artifactDir = "";
+
+beforeEach(() => {
+  artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "context-safe-plugin-index-"));
+  process.env.OPENCLAW_CONTEXT_SAFE_ARTIFACT_DIR = artifactDir;
+});
+
+afterEach(() => {
+  delete process.env.OPENCLAW_CONTEXT_SAFE_ARTIFACT_DIR;
+  if (artifactDir) {
+    fs.rmSync(artifactDir, { recursive: true, force: true });
+    artifactDir = "";
+  }
+});
 
 describe("context-safe plugin registration", () => {
   it("registers one context engine and the required safety hooks", () => {
@@ -43,7 +61,7 @@ describe("context-safe plugin registration", () => {
     ]);
   });
 
-  it("wires the registered engine and hook handlers to the plugin policy", async () => {
+  it("wires the registered engine and hook handlers to the official-compatible policy", async () => {
     let contextEngineFactory: (() => unknown) | undefined;
     const hooks = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -103,32 +121,59 @@ describe("context-safe plugin registration", () => {
     const beforeToolCall = hooks.get("before_tool_call");
     const toolResultPersist = hooks.get("tool_result_persist");
     const beforeToolCallResult = beforeToolCall?.({
-      toolName: "read",
-      params: { path: "README.md" },
+      toolName: "web_fetch",
+      params: { url: "https://example.com" },
     });
     const persistedResult = toolResultPersist?.({
       message: {
         role: "toolResult",
-        toolName: "read",
-        content: [{ type: "text", text: "preview" }],
-        details: { blob: "z".repeat(5000) },
+        toolName: "exec",
+        toolCallId: "call_exec_2",
+        content: [{ type: "text", text: `${"log line\n".repeat(250)}error: boom` }],
+        details: { raw: "z".repeat(5000) },
       },
-    });
+    }) as {
+      message?: {
+        content?: unknown;
+        details?: {
+          contextSafe?: {
+            excludedFromContext?: boolean;
+            outputFile?: string;
+          };
+        };
+      };
+    };
 
     expect(String(JSON.stringify(assembled.messages[1]))).toContain("truncated");
     expect(beforeToolCallResult).toEqual({
       params: {
-        path: "README.md",
-        limit: 200,
-        offset: 1,
+        url: "https://example.com",
+        maxChars: 12000,
       },
     });
-    expect(persistedResult).toEqual({
-      message: {
-        role: "toolResult",
-        toolName: "read",
-        content: [{ type: "text", text: "preview" }],
-      },
-    });
+    expect(textOf(persistedResult.message)).toContain("excluded from context");
+    expect(persistedResult.message?.details?.contextSafe?.excludedFromContext).toBe(true);
+    expect(
+      persistedResult.message?.details?.contextSafe?.outputFile
+        ? fs.existsSync(persistedResult.message.details.contextSafe.outputFile)
+        : false,
+    ).toBe(true);
   });
 });
+
+function textOf(message: unknown): string {
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .filter(
+      (block) =>
+        !!block && typeof block === "object" && (block as { type?: unknown }).type === "text",
+    )
+    .map((block) => String((block as { text?: unknown }).text ?? ""))
+    .join("\n");
+}
