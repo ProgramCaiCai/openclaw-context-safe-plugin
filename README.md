@@ -2,7 +2,7 @@
 
 ## 中文说明
 
-`context-safe` 是一个面向官方 OpenClaw 的独立插件，目标是在不修改 OpenClaw 核心代码的前提下，把 fork 里的 context-safe 行为迁移成可安装、可卸载、可独立维护的插件。
+`context-safe` 是一个面向官方 OpenClaw 的独立实现插件，提供可安装、可卸载、可独立维护的 context-safe 能力，并且不修改 OpenClaw 核心代码。
 
 这个插件兼容官方 `OpenClaw >= 2026.3.8`，并且只使用官方已经提供的扩展点：
 
@@ -10,7 +10,7 @@
 - `tool_result_persist`
 - `plugins.slots.contextEngine`
 
-重点说明：官方 `v2026.3.8` 没有你 fork 里那种给 `exec` / `web_fetch` 增加的 `excludeFromContext` 参数。这个插件不是假装官方已经有这个参数，而是在官方插件能力范围内，把“效果”复现出来。
+重点说明：官方 `v2026.3.8` 没有给 `exec` / `web_fetch` 暴露 `excludeFromContext` 参数。这个插件通过官方插件扩展点重写持久化的 tool result，在不修改 OpenClaw 核心代码的前提下复现同类效果。
 
 ### 这个插件能做什么
 
@@ -22,7 +22,7 @@
 
 ### 它为什么能省 Token
 
-核心原因不是换了更便宜的模型，而是减少了被重复塞进上下文的无价值工具输出。
+核心原因是减少了被重复塞进上下文的无价值工具输出，和模型价格无关。
 
 这个插件从四个层面省 token：
 
@@ -41,12 +41,38 @@
 - 工具噪声更不容易把真正的用户意图挤出窗口
 - 长会话更稳定，不容易因为几次大输出就触发严重 compaction
 
-### 官方命令安装
+### Python 一键脚本
 
-推荐直接使用官方命令：
+推荐优先使用仓库里附带的 `scripts/install.py`。
+
+安装：
 
 ```bash
-openclaw plugins install --link /path/to/openclaw-context-safe-plugin
+cd projects/openclaw-context-safe-plugin
+python3 scripts/install.py
+```
+
+卸载：
+
+```bash
+cd projects/openclaw-context-safe-plugin
+python3 scripts/install.py --uninstall
+```
+
+只打印将要执行的官方命令：
+
+```bash
+cd projects/openclaw-context-safe-plugin
+python3 scripts/install.py --dry-run
+```
+
+### 官方命令安装
+
+在插件项目目录执行官方命令：
+
+```bash
+cd projects/openclaw-context-safe-plugin
+openclaw plugins install --link .
 openclaw config set plugins.entries.context-safe.enabled true
 openclaw config set plugins.slots.contextEngine context-safe
 ```
@@ -54,7 +80,8 @@ openclaw config set plugins.slots.contextEngine context-safe
 如果你不想使用 `--link`，也可以直接 copy-install：
 
 ```bash
-openclaw plugins install /path/to/openclaw-context-safe-plugin
+cd projects/openclaw-context-safe-plugin
+openclaw plugins install .
 openclaw config set plugins.entries.context-safe.enabled true
 openclaw config set plugins.slots.contextEngine context-safe
 ```
@@ -73,28 +100,6 @@ openclaw config get plugins.slots.contextEngine
 ```bash
 openclaw config set plugins.slots.contextEngine legacy
 openclaw plugins uninstall context-safe --force
-```
-
-### Python 一键脚本
-
-仓库里附带了 `scripts/install.py`，但它只是把上面的官方命令串起来执行，不重新发明安装协议。
-
-安装：
-
-```bash
-python3 scripts/install.py
-```
-
-卸载：
-
-```bash
-python3 scripts/install.py --uninstall
-```
-
-只打印将要执行的官方命令：
-
-```bash
-python3 scripts/install.py --dry-run
 ```
 
 ### Artifact 行为
@@ -132,7 +137,7 @@ python3 -m py_compile scripts/install.py
 
 ## English
 
-`context-safe` is a standalone plugin for official OpenClaw releases. Its purpose is to move fork-only context-safety behavior into an installable, removable, independently maintained plugin without patching OpenClaw core.
+`context-safe` is an independently implemented plugin for official OpenClaw releases. It provides installable, removable, independently maintained context-safety behavior without patching OpenClaw core.
 
 It is compatible with `OpenClaw >= 2026.3.8` and uses only official extension points:
 
@@ -140,7 +145,7 @@ It is compatible with `OpenClaw >= 2026.3.8` and uses only official extension po
 - `tool_result_persist`
 - `plugins.slots.contextEngine`
 
-Important detail: official `v2026.3.8` does not expose the fork-only `excludeFromContext` parameter on `exec` or `web_fetch`. This plugin does not pretend that upstream already supports that parameter. Instead, it recreates the outcome by rewriting persisted tool results inside the official plugin surface.
+Important detail: official `v2026.3.8` does not expose an `excludeFromContext` parameter on `exec` or `web_fetch`. The plugin recreates a comparable outcome within the official plugin surface by rewriting persisted tool results, without patching OpenClaw core.
 
 ### What the Plugin Does
 
@@ -171,12 +176,38 @@ Typical effects:
 - better long-session stability
 - less context loss from one or two oversized tool calls
 
-### Official Install Commands
+### Python Convenience Script
 
-Preferred installation uses official OpenClaw commands directly:
+Recommended first path: use the repository's `scripts/install.py`.
+
+Install:
 
 ```bash
-openclaw plugins install --link /path/to/openclaw-context-safe-plugin
+cd projects/openclaw-context-safe-plugin
+python3 scripts/install.py
+```
+
+Uninstall:
+
+```bash
+cd projects/openclaw-context-safe-plugin
+python3 scripts/install.py --uninstall
+```
+
+Dry run:
+
+```bash
+cd projects/openclaw-context-safe-plugin
+python3 scripts/install.py --dry-run
+```
+
+### Official Install Commands
+
+Run the official commands from the plugin project directory:
+
+```bash
+cd projects/openclaw-context-safe-plugin
+openclaw plugins install --link .
 openclaw config set plugins.entries.context-safe.enabled true
 openclaw config set plugins.slots.contextEngine context-safe
 ```
@@ -184,7 +215,8 @@ openclaw config set plugins.slots.contextEngine context-safe
 If you prefer copy-install instead of linking:
 
 ```bash
-openclaw plugins install /path/to/openclaw-context-safe-plugin
+cd projects/openclaw-context-safe-plugin
+openclaw plugins install .
 openclaw config set plugins.entries.context-safe.enabled true
 openclaw config set plugins.slots.contextEngine context-safe
 ```
@@ -203,28 +235,6 @@ If the current context engine slot still points to `context-safe`, switch back t
 ```bash
 openclaw config set plugins.slots.contextEngine legacy
 openclaw plugins uninstall context-safe --force
-```
-
-### Python Convenience Script
-
-The repository includes `scripts/install.py`, but it is only a thin wrapper around the official commands above.
-
-Install:
-
-```bash
-python3 scripts/install.py
-```
-
-Uninstall:
-
-```bash
-python3 scripts/install.py --uninstall
-```
-
-Dry run:
-
-```bash
-python3 scripts/install.py --dry-run
 ```
 
 ### Artifact Behavior
