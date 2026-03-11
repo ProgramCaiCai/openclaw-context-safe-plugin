@@ -21,9 +21,27 @@ describe("applyContextToolResultPolicy", () => {
 
     const content = textOf(result.messages[0]);
     expect(content).toContain(CONTEXT_LIMIT_TRUNCATION_NOTICE);
-    expect(content).toContain("Use read with offset/limit for specific ranges.");
-    expect(content).toContain("tool=read");
+    expect(content).toContain("Rerun read with a narrower range");
+    expect(content).toContain("head");
+    expect(content).toContain("tail");
+    expect(content).toContain("jq");
     expect((result.messages[0] as { details?: unknown }).details).toBeUndefined();
+  });
+
+  it("leaves in-budget tool results untouched and without truncation notices", () => {
+    const original = toolResult({
+      toolName: "read",
+      text: "line 1\nline 2\nline 3",
+      details: { lineCount: 3 },
+    });
+
+    const result = applyContextToolResultPolicy({
+      messages: [original],
+      contextWindowTokens: 512,
+    });
+
+    expect(result.messages).toEqual([original]);
+    expect(textOf(result.messages[0])).not.toContain(CONTEXT_LIMIT_TRUNCATION_NOTICE);
   });
 
   it("compacts older tool results first when aggregate context exceeds the budget", () => {

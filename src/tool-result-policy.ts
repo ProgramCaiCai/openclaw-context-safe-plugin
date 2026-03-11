@@ -1,3 +1,5 @@
+import { resolveToolResultRecoveryHint } from "./tool-result-notices.js";
+
 export const CONTEXT_LIMIT_TRUNCATION_NOTICE = "[truncated: output exceeded context limit]";
 export const PREEMPTIVE_TOOL_RESULT_COMPACTION_PLACEHOLDER =
   "[compacted: tool output removed to free context]";
@@ -9,10 +11,6 @@ const TOOL_RESULT_CHARS_PER_TOKEN_ESTIMATE = 2;
 const MIN_CONTEXT_BUDGET_CHARS = 280;
 const MIN_SINGLE_TOOL_RESULT_CHARS = 160;
 const CONTEXT_NOTICE_PREFIX = "[context:";
-const READ_RECOVERY_HINT = "Use read with offset/limit for specific ranges.";
-const EXEC_RECOVERY_HINT =
-  "For shell output, rerun narrower commands with grep/jq/awk/head/tail to extract specific sections.";
-const GENERIC_RECOVERY_HINT = "Rerun with narrower params or request specific sections.";
 
 export type ContextSafeMessage = {
   role?: string;
@@ -200,14 +198,7 @@ function getToolResultMeta(message: ContextSafeMessage): {
 }
 
 function resolveRecoveryHint(toolName?: string): string {
-  const normalized = toolName?.trim().toLowerCase();
-  if (normalized === "read") {
-    return READ_RECOVERY_HINT;
-  }
-  if (normalized === "exec" || normalized === "bash") {
-    return EXEC_RECOVERY_HINT;
-  }
-  return GENERIC_RECOVERY_HINT;
+  return resolveToolResultRecoveryHint(toolName);
 }
 
 function formatContextDetailLine(params: {

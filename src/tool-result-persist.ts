@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveToolResultRecoveryHint } from "./tool-result-notices.js";
 
 const MAX_PERSISTED_DETAILS_CHARS = 4_096;
 const MAX_DETAIL_STRING_CHARS = 1_024;
@@ -279,13 +280,7 @@ function buildExternalizedNotice(params: {
 }
 
 function resolveRecoveryHint(toolName?: string): string {
-  if (toolName === "read") {
-    return "Use read with offset/limit for specific ranges.";
-  }
-  if (toolName === "exec" || toolName === "bash") {
-    return "Rerun narrower commands with grep/jq/awk/head/tail to inspect specific sections.";
-  }
-  return "Request narrower sections or rerun with more specific parameters.";
+  return resolveToolResultRecoveryHint(toolName);
 }
 
 function buildPreviewText(text: string, maxChars: number): string {

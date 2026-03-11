@@ -58,6 +58,26 @@ describe("applyBeforeToolCallSafety", () => {
 });
 
 describe("applyToolResultPersistSafety", () => {
+  it("uses the read-specific truncation hint when oversized read output is externalized", () => {
+    const result = applyToolResultPersistSafety({
+      message: {
+        role: "toolResult",
+        toolName: "read",
+        toolCallId: "call_read_1",
+        content: [{ type: "text", text: `${"row\n".repeat(4000)}{\"ok\":true}` }],
+        details: {
+          lineCount: 4001,
+        },
+      },
+    });
+
+    expect(textOf(result.message)).toContain("excluded from context");
+    expect(textOf(result.message)).toContain("Rerun read with a narrower range");
+    expect(textOf(result.message)).toContain("head");
+    expect(textOf(result.message)).toContain("tail");
+    expect(textOf(result.message)).toContain("jq");
+  });
+
   it("externalizes oversized exec results into an artifact-backed preview", () => {
     const result = applyToolResultPersistSafety({
       message: {
@@ -143,6 +163,19 @@ describe("applyToolResultPersistSafety", () => {
         },
       },
     });
+  });
+
+  it("does not inject context-safe notices when the tool result stays inline", () => {
+    const result = applyToolResultPersistSafety({
+      message: {
+        role: "toolResult",
+        toolName: "read",
+        content: [{ type: "text", text: "preview" }],
+      },
+    });
+
+    expect(textOf(result.message)).toBe("preview");
+    expect(textOf(result.message)).not.toContain("excluded from context");
   });
 });
 
