@@ -13,6 +13,8 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.OPENCLAW_CONTEXT_SAFE_ARTIFACT_DIR;
+  delete process.env.OPENCLAW_CONTEXT_SAFE_ARTIFACT_TTL_MS;
+  delete process.env.OPENCLAW_CONTEXT_SAFE_ARTIFACT_MAX_BYTES;
   if (artifactDir) {
     fs.rmSync(artifactDir, { recursive: true, force: true });
     artifactDir = "";
@@ -131,6 +133,128 @@ describe("applyToolResultPersistSafety", () => {
     expect(outputFile ? fs.readFileSync(outputFile, "utf-8") : "").toContain("error: boom");
   });
 
+  it("keeps oversized output inline when artifact persistence fails", () => {
+    const blockingPath = path.join(artifactDir, "artifact-dir-blocker");
+    fs.writeFileSync(blockingPath, "not-a-directory", "utf8");
+    process.env.OPENCLAW_CONTEXT_SAFE_ARTIFACT_DIR = blockingPath;
+
+    const result = applyToolResultPersistSafety({
+      message: {
+        role: "toolResult",
+        toolName: "exec",
+        toolCallId: "call_exec_write_fail",
+        content: [{ type: "text", text: `${"line\n".repeat(1200)}error: boom` }],
+        details: {
+          exitCode: 1,
+          raw: "x".repeat(9000),
+        },
+      },
+    });
+
+    const message = result.message as {
+      content?: unknown;
+      details?: {
+        contextSafe?: {
+          excludedFromContext?: boolean;
+          artifactWriteFailed?: boolean;
+          outputFile?: string;
+        };
+      };
+    };
+
+    expect(textOf(message)).toContain("kept inline");
+    expect(textOf(message)).toContain("error: boom");
+    expect(textOf(message)).not.toContain("excluded from context");
+    expect(message.details?.contextSafe?.excludedFromContext).toBe(false);
+    expect(message.details?.contextSafe?.artifactWriteFailed).toBe(true);
+    expect(message.details?.contextSafe?.outputFile).toBeUndefined();
+  });
+
+  it("enforces a hard details size cap after compaction", () => {
+    const details: Record<string, string> = {};
+    for (let i = 0; i < 25; i += 1) {
+      details[`chunk_${i}`] = "x".repeat(1000);
+    }
+
+    const result = applyToolResultPersistSafety({
+      message: {
+        role: "toolResult",
+        toolName: "read",
+        content: [{ type: "text", text: "preview" }],
+        details,
+      },
+    });
+
+    const compactedDetails = (result.message as { details?: unknown }).details as {
+      contextSafe?: { detailsCompacted?: boolean; detailsHardLimited?: boolean };
+    };
+    const serialized = JSON.stringify(compactedDetails);
+
+    expect(serialized.length).toBeLessThanOrEqual(4096);
+    expect(compactedDetails.contextSafe?.detailsCompacted).toBe(true);
+    expect(compactedDetails.contextSafe?.detailsHardLimited).toBe(true);
+  });
+
+  it("garbage-collects expired artifacts while preserving fresh files", () => {
+    process.env.OPENCLAW_CONTEXT_SAFE_ARTIFACT_TTL_MS = "1000";
+    process.env.OPENCLAW_CONTEXT_SAFE_ARTIFACT_MAX_BYTES = "10485760";
+
+    const staleFile = path.join(artifactDir, "exec", "stale.json");
+    const freshFile = path.join(artifactDir, "exec", "fresh.json");
+    fs.mkdirSync(path.dirname(staleFile), { recursive: true });
+    fs.writeFileSync(staleFile, "stale", "utf8");
+    fs.writeFileSync(freshFile, "fresh", "utf8");
+    const nowSeconds = Date.now() / 1000;
+    fs.utimesSync(staleFile, nowSeconds - 30, nowSeconds - 30);
+
+    const result = applyToolResultPersistSafety({
+      message: {
+        role: "toolResult",
+        toolName: "exec",
+        toolCallId: "call_exec_gc_ttl",
+        content: [{ type: "text", text: `${"log\n".repeat(900)}tail` }],
+        details: { raw: "x".repeat(9000) },
+      },
+    });
+
+    const outputFile = ((result.message as { details?: { contextSafe?: { outputFile?: string } } })
+      .details?.contextSafe?.outputFile ?? "") as string;
+
+    expect(fs.existsSync(staleFile)).toBe(false);
+    expect(fs.existsSync(freshFile)).toBe(true);
+    expect(outputFile.length > 0 && fs.existsSync(outputFile)).toBe(true);
+  });
+
+  it("evicts oldest artifacts first when directory exceeds the size limit", () => {
+    process.env.OPENCLAW_CONTEXT_SAFE_ARTIFACT_TTL_MS = "604800000";
+    process.env.OPENCLAW_CONTEXT_SAFE_ARTIFACT_MAX_BYTES = "4000";
+
+    const oldFile = path.join(artifactDir, "exec", "oldest.json");
+    const newerFile = path.join(artifactDir, "exec", "newer.json");
+    fs.mkdirSync(path.dirname(oldFile), { recursive: true });
+    fs.writeFileSync(oldFile, "A".repeat(2500), "utf8");
+    fs.writeFileSync(newerFile, "B".repeat(200), "utf8");
+    const nowSeconds = Date.now() / 1000;
+    fs.utimesSync(oldFile, nowSeconds - 20, nowSeconds - 20);
+    fs.utimesSync(newerFile, nowSeconds - 10, nowSeconds - 10);
+
+    const result = applyToolResultPersistSafety({
+      message: {
+        role: "toolResult",
+        toolName: "exec",
+        toolCallId: "call_exec_gc_size",
+        content: [{ type: "text", text: `${"event\n".repeat(1000)}done` }],
+        details: { raw: "x".repeat(9000) },
+      },
+    });
+
+    const outputFile = ((result.message as { details?: { contextSafe?: { outputFile?: string } } })
+      .details?.contextSafe?.outputFile ?? "") as string;
+
+    expect(fs.existsSync(oldFile)).toBe(false);
+    expect(outputFile.length > 0 && fs.existsSync(outputFile)).toBe(true);
+  });
+
   it("compacts oversized details into a bounded metadata payload", () => {
     const result = applyToolResultPersistSafety({
       message: {
@@ -214,3 +338,4 @@ function textOf(message: unknown): string {
     .map((block) => String((block as { text?: unknown }).text ?? ""))
     .join("\n");
 }
+

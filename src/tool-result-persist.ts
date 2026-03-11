@@ -10,19 +10,24 @@ const MAX_DETAIL_ARRAY_ITEMS = 12;
 const MAX_DETAIL_OBJECT_KEYS = 20;
 const MAX_INLINE_PREVIEW_CHARS = 4_000;
 const PREVIEW_OMISSION_MARKER = "\n\n[context-safe preview truncated]\n\n";
+const DEFAULT_ARTIFACT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_ARTIFACT_MAX_BYTES = 128 * 1024 * 1024;
 
 const AGGRESSIVE_EXTERNALIZATION_TOOLS = new Set(["exec", "bash", "web_fetch"]);
 const OMIT = Symbol("omit");
 
 type ToolResultMessage = Record<string, unknown>;
 type ContextSafeMetadata = {
+  artifactWriteFailed?: boolean;
   detailsCompacted?: boolean;
+  detailsHardLimited?: boolean;
   excludedFromContext?: boolean;
   originalChars?: number;
   originalTextChars?: number;
   originalDetailsChars?: number;
   outputFile?: string;
   previewChars?: number;
+  retainedSummaryOnly?: boolean;
 };
 
 export function applyPersistedToolResultPolicy(params: {
@@ -55,19 +60,46 @@ export function applyPersistedToolResultPolicy(params: {
     });
     const previewSource = toolText || artifactPayload;
     const preview = buildPreviewText(previewSource, MAX_INLINE_PREVIEW_CHARS);
-    const notice = buildExternalizedNotice({
-      toolName,
-      outputFile,
-    });
-    const details = mergeContextSafeMetadata(detailsCompaction.value, {
-      excludedFromContext: true,
-      originalTextChars: textChars,
-      originalDetailsChars: detailsCompaction.originalChars,
-      outputFile,
-      previewChars: MAX_INLINE_PREVIEW_CHARS,
-    });
+
+    if (outputFile) {
+      const notice = buildExternalizedNotice({
+        toolName,
+        outputFile,
+      });
+      const details = withHardLimitedContextSafeMetadata(
+        detailsCompaction.value,
+        {
+          excludedFromContext: true,
+          originalTextChars: textChars,
+          originalDetailsChars: detailsCompaction.originalChars,
+          outputFile,
+          previewChars: MAX_INLINE_PREVIEW_CHARS,
+        },
+        detailsCompaction.originalChars,
+      );
+      return {
+        message: replaceToolResultContent(params.message, `${notice}\n\n${preview}`, details),
+      };
+    }
+
+    const fallbackNotice = buildInlineFallbackNotice({ toolName });
+    const fallbackDetails = withHardLimitedContextSafeMetadata(
+      detailsCompaction.value,
+      {
+        artifactWriteFailed: true,
+        excludedFromContext: false,
+        originalTextChars: textChars,
+        originalDetailsChars: detailsCompaction.originalChars,
+        previewChars: MAX_INLINE_PREVIEW_CHARS,
+      },
+      detailsCompaction.originalChars,
+    );
     return {
-      message: replaceToolResultContent(params.message, `${notice}\n\n${preview}`, details),
+      message: replaceToolResultContent(
+        params.message,
+        `${fallbackNotice}\n\n${preview}`,
+        fallbackDetails,
+      ),
     };
   }
 
@@ -186,10 +218,14 @@ function compactDetails(details: unknown): {
   const compacted = compactUnknown(details, 0);
   const normalized = compacted === OMIT ? undefined : compacted;
   return {
-    value: mergeContextSafeMetadata(normalized, {
-      detailsCompacted: true,
+    value: withHardLimitedContextSafeMetadata(
+      normalized,
+      {
+        detailsCompacted: true,
+        originalChars,
+      },
       originalChars,
-    }),
+    ),
     originalChars,
     compacted: true,
   };
@@ -262,19 +298,60 @@ function mergeContextSafeMetadata(details: unknown, meta: ContextSafeMetadata): 
   };
 }
 
+function withHardLimitedContextSafeMetadata(
+  details: unknown,
+  meta: ContextSafeMetadata,
+  originalChars: number,
+): Record<string, unknown> {
+  const merged = mergeContextSafeMetadata(details, meta);
+  return enforceDetailsHardLimit(merged, originalChars);
+}
+
+function enforceDetailsHardLimit(details: Record<string, unknown>, originalChars: number) {
+  if (estimateChars(details) <= MAX_PERSISTED_DETAILS_CHARS) {
+    return details;
+  }
+
+  const existingMeta = isRecord(details.contextSafe) ? details.contextSafe : {};
+  const summaryMeta = {
+    ...existingMeta,
+    detailsCompacted: true,
+    detailsHardLimited: true,
+    originalChars,
+    retainedSummaryOnly: true,
+  };
+  const summaryOnly = { contextSafe: summaryMeta };
+  if (estimateChars(summaryOnly) <= MAX_PERSISTED_DETAILS_CHARS) {
+    return summaryOnly;
+  }
+
+  return {
+    contextSafe: {
+      detailsCompacted: true,
+      detailsHardLimited: true,
+      originalChars,
+      retainedSummaryOnly: true,
+    },
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function buildExternalizedNotice(params: {
   toolName?: string;
-  outputFile?: string;
+  outputFile: string;
 }): string {
   const toolLabel = params.toolName ?? "tool";
-  const location = params.outputFile
-    ? `saved to ${params.outputFile}`
-    : "artifact save failed";
-  return `[context-safe] ${toolLabel} output excluded from context; ${location}. ${resolveRecoveryHint(
+  return `[context-safe] ${toolLabel} output excluded from context; saved to ${params.outputFile}. ${resolveRecoveryHint(
+    params.toolName,
+  )}`;
+}
+
+function buildInlineFallbackNotice(params: { toolName?: string }): string {
+  const toolLabel = params.toolName ?? "tool";
+  return `[context-safe] ${toolLabel} output kept inline because artifact save failed. ${resolveRecoveryHint(
     params.toolName,
   )}`;
 }
@@ -353,15 +430,158 @@ function writeArtifactSync(params: {
   toolCallId?: string;
   payload: string;
 }): string | undefined {
+  const baseDir = resolveArtifactBaseDir();
   try {
-    const directory = path.join(resolveArtifactBaseDir(), sanitizePathSegment(params.toolName));
+    const directory = path.join(baseDir, sanitizePathSegment(params.toolName));
     fs.mkdirSync(directory, { recursive: true });
     const filePath = path.join(directory, buildArtifactFileName(params));
     fs.writeFileSync(filePath, params.payload, "utf8");
+    gcArtifactsSync({
+      baseDir,
+      protectedFilePath: filePath,
+    });
     return filePath;
   } catch {
     return undefined;
   }
+}
+
+function gcArtifactsSync(params: { baseDir: string; protectedFilePath: string }) {
+  const gcPolicy = resolveArtifactGcPolicy();
+  if (!gcPolicy.enabled) {
+    return;
+  }
+
+  const entries = listArtifactEntries(params.baseDir);
+  if (entries.length === 0) {
+    return;
+  }
+
+  const protectedPath = safeRealpath(params.protectedFilePath) ?? params.protectedFilePath;
+  let survivors = entries.slice();
+
+  if (gcPolicy.ttlMs > 0) {
+    const now = Date.now();
+    survivors = survivors.filter((entry) => {
+      if (entry.path === protectedPath) {
+        return true;
+      }
+      if (now - entry.mtimeMs <= gcPolicy.ttlMs) {
+        return true;
+      }
+      return !deleteArtifactFile(entry.path);
+    });
+  }
+
+  if (gcPolicy.maxBytes <= 0) {
+    return;
+  }
+
+  let totalBytes = survivors.reduce((sum, entry) => sum + entry.size, 0);
+  if (totalBytes <= gcPolicy.maxBytes) {
+    return;
+  }
+
+  const sorted = [...survivors].sort((left, right) => left.mtimeMs - right.mtimeMs);
+  for (const entry of sorted) {
+    if (totalBytes <= gcPolicy.maxBytes) {
+      break;
+    }
+    if (entry.path === protectedPath) {
+      continue;
+    }
+    if (!deleteArtifactFile(entry.path)) {
+      continue;
+    }
+    totalBytes -= entry.size;
+  }
+}
+
+function deleteArtifactFile(filePath: string): boolean {
+  try {
+    fs.unlinkSync(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function listArtifactEntries(baseDir: string): Array<{ path: string; size: number; mtimeMs: number }> {
+  const entries: Array<{ path: string; size: number; mtimeMs: number }> = [];
+  const root = safeRealpath(baseDir) ?? baseDir;
+
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) {
+      continue;
+    }
+
+    let dirEntries: fs.Dirent[];
+    try {
+      dirEntries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of dirEntries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      try {
+        const stats = fs.statSync(fullPath);
+        entries.push({
+          path: safeRealpath(fullPath) ?? fullPath,
+          size: stats.size,
+          mtimeMs: stats.mtimeMs,
+        });
+      } catch {
+        // Ignore files that disappear during cleanup.
+      }
+    }
+  }
+
+  return entries;
+}
+
+function safeRealpath(targetPath: string): string | undefined {
+  try {
+    return fs.realpathSync(targetPath);
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveArtifactGcPolicy(): { enabled: boolean; ttlMs: number; maxBytes: number } {
+  const ttlMs = parsePositiveInteger(
+    process.env.OPENCLAW_CONTEXT_SAFE_ARTIFACT_TTL_MS,
+    DEFAULT_ARTIFACT_TTL_MS,
+  );
+  const maxBytes = parsePositiveInteger(
+    process.env.OPENCLAW_CONTEXT_SAFE_ARTIFACT_MAX_BYTES,
+    DEFAULT_ARTIFACT_MAX_BYTES,
+  );
+  return {
+    enabled: ttlMs > 0 || maxBytes > 0,
+    ttlMs,
+    maxBytes,
+  };
+}
+
+function parsePositiveInteger(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === "") {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
 }
 
 function resolveArtifactBaseDir(): string {
