@@ -22,6 +22,7 @@
   "files": [
     "index.ts",
     "LICENSE",
+    "scripts/install.py",
     "openclaw.plugin.json",
     "README.md",
     "src/context-engine.ts",
