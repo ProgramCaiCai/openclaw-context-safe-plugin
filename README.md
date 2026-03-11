@@ -51,10 +51,24 @@ python3 scripts/install.py
 python3 scripts/install.py
 ```
 
+这个脚本本质上只调用官方命令：
+
+```bash
+openclaw plugins install --link .
+openclaw config set plugins.entries.context-safe.enabled true
+openclaw config set plugins.slots.contextEngine context-safe
+```
+
 只看安装动作，不真正执行：
 
 ```bash
 python3 scripts/install.py --dry-run
+```
+
+使用官方 copy-install 而不是 `--link`：
+
+```bash
+python3 scripts/install.py --copy
 ```
 
 只安装插件，不改 slot / config：
@@ -69,18 +83,30 @@ python3 scripts/install.py --no-config
 python3 scripts/install.py --openclaw-bin /path/to/openclaw
 ```
 
+官方卸载：
+
+```bash
+python3 scripts/install.py --uninstall
+```
+
 手动安装：
 
 ```bash
-openclaw plugins install .
+openclaw plugins install --link .
 openclaw config set plugins.entries.context-safe.enabled true
 openclaw config set plugins.slots.contextEngine context-safe
 ```
 
+手动卸载：
+
+```bash
+openclaw plugins uninstall context-safe --force
+```
+
 安装脚本会：
 
-- 准备一个可安装的 staging copy
-- 调用 `openclaw plugins install`
+- 优先调用官方 `openclaw plugins install --link`
+- 如果官方返回同名插件已存在，会再调用一次官方 `openclaw plugins uninstall --force` 后重试安装
 - 默认启用 `plugins.entries.context-safe.enabled=true`
 - 默认设置 `plugins.slots.contextEngine=context-safe`
 
@@ -195,10 +221,24 @@ Install and enable:
 python3 scripts/install.py
 ```
 
+The script only wraps official OpenClaw commands:
+
+```bash
+openclaw plugins install --link .
+openclaw config set plugins.entries.context-safe.enabled true
+openclaw config set plugins.slots.contextEngine context-safe
+```
+
 Dry run:
 
 ```bash
 python3 scripts/install.py --dry-run
+```
+
+Use official copy-install instead of `--link`:
+
+```bash
+python3 scripts/install.py --copy
 ```
 
 Install without changing config:
@@ -213,18 +253,30 @@ Use a custom OpenClaw binary:
 python3 scripts/install.py --openclaw-bin /path/to/openclaw
 ```
 
+Official uninstall:
+
+```bash
+python3 scripts/install.py --uninstall
+```
+
 Manual install:
 
 ```bash
-openclaw plugins install .
+openclaw plugins install --link .
 openclaw config set plugins.entries.context-safe.enabled true
 openclaw config set plugins.slots.contextEngine context-safe
 ```
 
+Manual uninstall:
+
+```bash
+openclaw plugins uninstall context-safe --force
+```
+
 The installer:
 
-- materializes an installable staging copy
-- runs `openclaw plugins install`
+- prefers the official `openclaw plugins install --link`
+- if OpenClaw reports an existing plugin id, retries with the official `openclaw plugins uninstall --force` first
 - enables `plugins.entries.context-safe.enabled=true`
 - selects `plugins.slots.contextEngine=context-safe`
 
