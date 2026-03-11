@@ -78,6 +78,25 @@ describe("applyToolResultPersistSafety", () => {
     expect(textOf(result.message)).toContain("jq");
   });
 
+  it("uses the web_fetch-specific truncation hint when oversized fetch output is externalized", () => {
+    const result = applyToolResultPersistSafety({
+      message: {
+        role: "toolResult",
+        toolName: "web_fetch",
+        toolCallId: "call_web_fetch_1",
+        content: [{ type: "text", text: `${"payload ".repeat(1200)}END` }],
+        details: {
+          status: 200,
+        },
+      },
+    });
+
+    expect(textOf(result.message)).toContain("excluded from context");
+    expect(textOf(result.message)).toContain("curl");
+    expect(textOf(result.message)).toContain("read");
+    expect(textOf(result.message)).toContain("save the response to a file");
+  });
+
   it("externalizes oversized exec results into an artifact-backed preview", () => {
     const result = applyToolResultPersistSafety({
       message: {

@@ -3,7 +3,7 @@ const READ_RECOVERY_HINT =
 const EXEC_RECOVERY_HINT =
   "For shell output, rerun a narrower command and pipe to grep, jq, awk, head, or tail to isolate the relevant section.";
 const WEB_FETCH_RECOVERY_HINT =
-  "Rerun web_fetch with a more specific URL or smaller maxChars and request only the relevant section.";
+  "Use curl to save the response to a file, then use read on that file to inspect only the needed section.";
 const GENERIC_RECOVERY_HINT =
   "Rerun with narrower params or request only the specific section you need.";
 

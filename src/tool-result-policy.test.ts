@@ -28,6 +28,26 @@ describe("applyContextToolResultPolicy", () => {
     expect((result.messages[0] as { details?: unknown }).details).toBeUndefined();
   });
 
+  it("truncates an oversized web_fetch result and suggests curl plus read", () => {
+    const result = applyContextToolResultPolicy({
+      messages: [
+        toolResult({
+          toolName: "web_fetch",
+          toolCallId: "call-web-fetch-1",
+          text: "f".repeat(320),
+          details: { raw: "d".repeat(400) },
+        }),
+      ],
+      contextWindowTokens: 32,
+    });
+
+    const content = textOf(result.messages[0]);
+    expect(content).toContain(CONTEXT_LIMIT_TRUNCATION_NOTICE);
+    expect(content).toContain("curl");
+    expect(content).toContain("read");
+    expect(content).toContain("save the response to a file");
+  });
+
   it("leaves in-budget tool results untouched and without truncation notices", () => {
     const original = toolResult({
       toolName: "read",
