@@ -1,0 +1,57 @@
+{
+  "name": "context-safe",
+  "version": "0.1.0",
+  "description": "Standalone context-safe plugin for OpenClaw.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ProgramCaiCai/openclaw-context-safe-plugin.git"
+  },
+  "homepage": "https://github.com/ProgramCaiCai/openclaw-context-safe-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/ProgramCaiCai/openclaw-context-safe-plugin/issues"
+  },
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "context-engine",
+    "tool-result",
+    "gateway"
+  ],
+  "type": "module",
+  "files": [
+    "index.ts",
+    "LICENSE",
+    "openclaw.plugin.json",
+    "README.md",
+    "src/context-engine.ts",
+    "src/hooks.ts",
+    "src/tool-result-policy.ts"
+  ],
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "install:plugin": "python3 scripts/install.py"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.8"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "25.4.0",
+    "typescript": "5.9.3",
+    "vitest": "4.0.18"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
