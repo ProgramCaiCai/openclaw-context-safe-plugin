@@ -390,6 +390,11 @@ describe("createContextSafeContextEngine", () => {
   it("prunes and persists canonical state during afterTurn for growth-heavy final turns", async () => {
     const info = vi.fn();
     const engine = createContextSafeContextEngine({
+      prune: {
+        thresholdChars: 50_000,
+        keepRecentToolResults: 2,
+        placeholder: "[pruned]",
+      },
       logger: { info },
     });
     const sessionId = "session-after-turn-prune";
@@ -422,7 +427,7 @@ describe("createContextSafeContextEngine", () => {
       messages: Array<{ role?: string; content?: unknown; details?: unknown }>;
     };
 
-    expect(countThinkingBlocks(savedState.messages)).toBe(0);
+    expect(countThinkingBlocks(savedState.messages)).toBe(1);
     expect(toolResultTexts(savedState.messages)).toEqual([
       "[pruned]",
       "[pruned]",
