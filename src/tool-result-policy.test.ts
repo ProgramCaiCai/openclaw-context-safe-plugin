@@ -121,6 +121,20 @@ function toolResult(input: {
   };
 }
 
+function assistantToolUse(toolName: string, toolCallId: string, input: Record<string, unknown>) {
+  return {
+    role: "assistant",
+    content: [
+      {
+        type: "tool_use",
+        name: toolName,
+        id: toolCallId,
+        input,
+      },
+    ],
+  };
+}
+
 function textOf(message: unknown): string {
   const content = (message as { content?: unknown }).content;
   if (typeof content === "string") {
@@ -192,7 +206,7 @@ describe("prune threshold gating", () => {
     expect(result.messages).toEqual(messages);
   });
 
-  it("fires prune when gain reaches the threshold and keeps exactly the two newest tool results inline", () => {
+  it("fires prune when gain reaches the threshold and preserves the protected window", () => {
     const messages = canonicalMessages({
       thinkingChars: 16_000,
       thinkingOnlyChars: 16_000,
@@ -215,7 +229,7 @@ describe("prune threshold gating", () => {
       placeholder: "[pruned]",
     });
 
-    expect(countThinkingBlocks(result.messages)).toBe(0);
+    expect(countThinkingBlocks(result.messages)).toBe(1);
     expect(toolResultTexts(result.messages)).toEqual([
       "[pruned]",
       "[pruned]",
@@ -258,7 +272,7 @@ describe("prune threshold gating", () => {
     });
 
     expect(defaultResult.messages).toEqual(defaultMessages);
-    expect(countThinkingBlocks(customResult.messages)).toBe(0);
+    expect(countThinkingBlocks(customResult.messages)).toBe(1);
     expect(toolResultTexts(customResult.messages)).toEqual([
       "[pruned]",
       "[pruned]",
@@ -271,6 +285,99 @@ describe("prune threshold gating", () => {
       undefined,
       undefined,
     ]);
+  });
+
+  it("protects head and tail windows plus basename-matched read messages and linked tool results", () => {
+    const messages = [
+      userMessage("session start"),
+      {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "head-thinking" }],
+      },
+      toolResult({
+        toolName: "exec",
+        toolCallId: "old-tool-1",
+        text: "legacy result 1",
+        details: { raw: "a".repeat(4_000) },
+      }),
+      assistantMessage("head context"),
+      assistantToolUse("read", "head-read-call", { path: "/repo/.codex/skills/example/SKILL.md" }),
+      toolResult({
+        toolName: "read",
+        toolCallId: "head-read-call",
+        text: "head protected read result",
+        details: { raw: "b".repeat(4_000) },
+      }),
+      {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "middle-thinking" }],
+      },
+      assistantToolUse("read", "middle-read-call", { path: "/tmp/policies/agents.MD" }),
+      toolResult({
+        toolName: "read",
+        toolCallId: "middle-read-call",
+        text: "middle protected read result",
+        details: { raw: "c".repeat(4_000) },
+      }),
+      toolResult({
+        toolName: "exec",
+        toolCallId: "old-tool-2",
+        text: "legacy result 2",
+        details: { raw: "d".repeat(4_000) },
+      }),
+      toolResult({
+        toolName: "read",
+        toolCallId: "tail-read-call",
+        text: "tail protected read result",
+        details: { raw: "e".repeat(4_000) },
+      }),
+      assistantToolUse("read", "tail-read-call", { path: "/tmp/runtime/Today.md" }),
+      {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "tail-thinking" }],
+      },
+      toolResult({
+        toolName: "exec",
+        toolCallId: "recent-tool-1",
+        text: "recent tool result 1",
+      }),
+      assistantMessage("session end"),
+      toolResult({
+        toolName: "read",
+        toolCallId: "recent-tool-2",
+        text: "recent tool result 2",
+      }),
+    ];
+
+    const result = policy.applyCanonicalPrune({
+      messages,
+      thresholdChars: 1,
+      keepRecentToolResults: 5,
+      placeholder: "[pruned]",
+    });
+
+    expect(result.pruned).toBe(true);
+    expect(countThinkingBlocks(result.messages)).toBe(2);
+    expect(textOf(result.messages[2])).toBe("legacy result 1");
+    expect(textOf(result.messages[5])).toBe("head protected read result");
+    expect(textOf(result.messages[8])).toBe("middle protected read result");
+    expect(textOf(result.messages[9])).toBe("[pruned]");
+    expect(textOf(result.messages[10])).toBe("tail protected read result");
+    expect(textOf(result.messages[13])).toBe("recent tool result 1");
+    expect(textOf(result.messages[15])).toBe("recent tool result 2");
+    expect((result.messages[2] as { details?: unknown }).details).toEqual({
+      raw: "a".repeat(4_000),
+    });
+    expect((result.messages[5] as { details?: unknown }).details).toEqual({
+      raw: "b".repeat(4_000),
+    });
+    expect((result.messages[8] as { details?: unknown }).details).toEqual({
+      raw: "c".repeat(4_000),
+    });
+    expect((result.messages[9] as { details?: unknown }).details).toBeUndefined();
+    expect((result.messages[10] as { details?: unknown }).details).toEqual({
+      raw: "e".repeat(4_000),
+    });
   });
 });
 

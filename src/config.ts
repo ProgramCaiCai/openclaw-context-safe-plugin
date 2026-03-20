@@ -1,5 +1,5 @@
-export const DEFAULT_PRUNE_THRESHOLD_CHARS = 50_000;
-export const DEFAULT_KEEP_RECENT_TOOL_RESULTS = 2;
+export const DEFAULT_PRUNE_THRESHOLD_CHARS = 100_000;
+export const DEFAULT_KEEP_RECENT_TOOL_RESULTS = 5;
 export const DEFAULT_PRUNE_PLACEHOLDER = "[pruned]";
 
 export type ContextSafePruneConfig = {

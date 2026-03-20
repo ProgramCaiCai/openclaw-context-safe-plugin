@@ -35,12 +35,12 @@ describe("package manifest", () => {
         thresholdChars: {
           type: "integer",
           minimum: 1,
-          default: 50000,
+          default: 100000,
         },
         keepRecentToolResults: {
           type: "integer",
           minimum: 0,
-          default: 2,
+          default: 5,
         },
         placeholder: {
           type: "string",

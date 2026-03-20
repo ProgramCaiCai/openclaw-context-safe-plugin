@@ -11,6 +11,19 @@ const TOOL_RESULT_CHARS_PER_TOKEN_ESTIMATE = 2;
 const MIN_CONTEXT_BUDGET_CHARS = 280;
 const MIN_SINGLE_TOOL_RESULT_CHARS = 160;
 const CONTEXT_NOTICE_PREFIX = "[context:";
+const PROTECTED_READ_BASENAMES = new Set([
+  "agents.md",
+  "heartbeat.md",
+  "identity.md",
+  "memory.md",
+  "now.md",
+  "session-state.md",
+  "skill.md",
+  "soul.md",
+  "today.md",
+  "tools.md",
+  "user.md",
+]);
 
 export type ContextSafeMessage = {
   role?: string;
@@ -30,21 +43,18 @@ export function estimatePruneGain(params: {
   keepRecentToolResults: number;
   placeholder: string;
 }): number {
-  const protectedToolResultIndexes = findProtectedToolResultIndexes(
-    params.messages,
-    params.keepRecentToolResults,
-  );
+  const protectedIndexes = findProtectedMessageIndexes(params.messages, params.keepRecentToolResults);
   let gain = 0;
 
   for (let i = 0; i < params.messages.length; i++) {
     const message = params.messages[i];
 
-    if (message.role === "assistant") {
+    if (message.role === "assistant" && !protectedIndexes.has(i)) {
       gain += estimateThinkingChars(message);
       continue;
     }
 
-    if (!isToolResultMessage(message) || protectedToolResultIndexes.has(i)) {
+    if (!isToolResultMessage(message) || protectedIndexes.has(i)) {
       continue;
     }
 
@@ -74,15 +84,15 @@ export function applyCanonicalPrune(params: {
     };
   }
 
-  const protectedToolResultIndexes = findProtectedToolResultIndexes(
-    params.messages,
-    params.keepRecentToolResults,
-  );
+  const protectedIndexes = findProtectedMessageIndexes(params.messages, params.keepRecentToolResults);
   const messages = params.messages.map((message, index) => {
+    if (protectedIndexes.has(index)) {
+      return message;
+    }
     if (message.role === "assistant") {
       return pruneAssistantThinking(message);
     }
-    if (!isToolResultMessage(message) || protectedToolResultIndexes.has(index)) {
+    if (!isToolResultMessage(message)) {
       return message;
     }
     return pruneToolResultMessage(message, params.placeholder);
@@ -162,17 +172,38 @@ function isToolResultMessage(message: ContextSafeMessage): boolean {
   return message.role === "toolResult" || message.role === "tool" || message.type === "toolResult";
 }
 
-function findProtectedToolResultIndexes(
-  messages: ContextSafeMessage[],
-  keepRecentToolResults: number,
-): Set<number> {
-  const indexes: number[] = [];
+function findProtectedMessageIndexes(messages: ContextSafeMessage[], protectedWindowSize: number): Set<number> {
+  const protectedIndexes = new Set<number>();
+  const protectedToolCallIds = new Set<string>();
+  const windowSize = Math.max(0, protectedWindowSize);
+  const headStop = Math.min(messages.length, windowSize);
+  const tailStart = Math.max(0, messages.length - windowSize);
+
+  for (let i = 0; i < headStop; i++) {
+    protectedIndexes.add(i);
+    addProtectedToolCallIds(protectedToolCallIds, messages[i]);
+  }
+  for (let i = tailStart; i < messages.length; i++) {
+    protectedIndexes.add(i);
+    addProtectedToolCallIds(protectedToolCallIds, messages[i]);
+  }
+
   for (let i = 0; i < messages.length; i++) {
-    if (isToolResultMessage(messages[i])) {
-      indexes.push(i);
+    if (!isProtectedReadMessage(messages[i])) {
+      continue;
+    }
+    protectedIndexes.add(i);
+    addProtectedToolCallIds(protectedToolCallIds, messages[i]);
+  }
+
+  for (let i = 0; i < messages.length; i++) {
+    const toolCallId = getMessageToolCallId(messages[i]);
+    if (toolCallId && protectedToolCallIds.has(toolCallId) && isToolResultMessage(messages[i])) {
+      protectedIndexes.add(i);
     }
   }
-  return new Set(indexes.slice(-Math.max(0, keepRecentToolResults)));
+
+  return protectedIndexes;
 }
 
 function textBlocksOf(message: ContextSafeMessage): string[] {
@@ -256,6 +287,98 @@ function estimateThinkingChars(message: ContextSafeMessage): number {
 
 function estimateContextChars(messages: ContextSafeMessage[]): number {
   return messages.reduce((sum, message) => sum + estimateMessageChars(message), 0);
+}
+
+function addProtectedToolCallIds(target: Set<string>, message: ContextSafeMessage): void {
+  const toolCallId = getMessageToolCallId(message);
+  if (toolCallId) {
+    target.add(toolCallId);
+  }
+  if (!Array.isArray(message.content)) {
+    return;
+  }
+  for (const block of message.content) {
+    const blockToolCallId = getToolCallIdFromValue(block);
+    if (blockToolCallId) {
+      target.add(blockToolCallId);
+    }
+  }
+}
+
+function getMessageToolCallId(message: ContextSafeMessage): string | undefined {
+  return asTrimmedString(message.toolCallId) ?? asTrimmedString(message.tool_call_id);
+}
+
+function getToolCallIdFromValue(value: unknown): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return (
+    asTrimmedString(value.toolCallId) ??
+    asTrimmedString(value.tool_call_id) ??
+    asTrimmedString(value.id)
+  );
+}
+
+function isProtectedReadMessage(message: ContextSafeMessage): boolean {
+  for (const candidate of extractReadPathCandidates(message)) {
+    const basename = candidate.replaceAll("\\", "/").split("/").pop()?.trim().toLowerCase();
+    if (basename && PROTECTED_READ_BASENAMES.has(basename)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function extractReadPathCandidates(message: ContextSafeMessage): string[] {
+  const candidates: string[] = [];
+  if (isReadToolValue(message)) {
+    candidates.push(...extractPathCandidates(message.input));
+    candidates.push(...extractPathCandidates(message.params));
+    candidates.push(...extractPathCandidates(message.arguments));
+    candidates.push(...extractPathCandidates(message.args));
+  }
+  if (!Array.isArray(message.content)) {
+    return candidates;
+  }
+  for (const block of message.content) {
+    if (!isReadToolValue(block)) {
+      continue;
+    }
+    candidates.push(...extractPathCandidates(block.input));
+    candidates.push(...extractPathCandidates(block.params));
+    candidates.push(...extractPathCandidates(block.arguments));
+    candidates.push(...extractPathCandidates(block.args));
+  }
+  return candidates;
+}
+
+function isReadToolValue(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const toolName =
+    asTrimmedString(value.toolName) ??
+    asTrimmedString(value.tool_name) ??
+    asTrimmedString(value.name);
+  return toolName?.toLowerCase() === "read";
+}
+
+function extractPathCandidates(value: unknown): string[] {
+  if (!isRecord(value)) {
+    return [];
+  }
+  const candidates = [
+    asTrimmedString(value.path),
+    asTrimmedString(value.filePath),
+    asTrimmedString(value.filepath),
+    asTrimmedString(value.file_path),
+  ];
+  return candidates.filter((candidate): candidate is string => !!candidate);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function asTrimmedString(value: unknown): string | undefined {

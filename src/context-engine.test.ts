@@ -67,6 +67,11 @@ describe("createContextSafeContextEngine", () => {
   it("compacts canonical state from the session transcript for manual compact requests", async () => {
     const info = vi.fn();
     const engine = createContextSafeContextEngine({
+      prune: {
+        thresholdChars: 100_000,
+        keepRecentToolResults: 2,
+        placeholder: "[pruned]",
+      },
       logger: { info },
     });
     const sessionFile = path.join(artifactDir, "manual-compact.jsonl");
@@ -99,7 +104,7 @@ describe("createContextSafeContextEngine", () => {
       tokenBudget: 30_000,
     });
 
-    expect(countThinkingBlocks(assembled.messages)).toBe(0);
+    expect(countThinkingBlocks(assembled.messages)).toBe(1);
     expect(toolResultTexts(assembled.messages)).toEqual([
       "[pruned]",
       "[pruned]",
@@ -131,7 +136,7 @@ describe("createContextSafeContextEngine", () => {
       reason: "context-safe canonical transcript already minimal",
     });
   });
-  it("prunes canonical transcript during assemble when default threshold gain exceeds 50000", async () => {
+  it("prunes canonical transcript during assemble when the default threshold gain exceeds 100000", async () => {
     const info = vi.fn();
     const engine = createContextSafeContextEngine({
       logger: { info },
@@ -139,23 +144,27 @@ describe("createContextSafeContextEngine", () => {
 
     const result = await engine.assemble({
       sessionId: "session-default-prune",
-      messages: canonicalMessages({
+      messages: defaultWindowCanonicalMessages({
         thinkingChars: 16_000,
-        thinkingOnlyChars: 16_000,
-        oldToolTextChars: 9_000,
-        oldToolDetailsChars: 5_000,
+        thinkingOnlyChars: 20_000,
+        oldToolTextChars: 15_000,
+        oldToolDetailsChars: 10_000,
       }),
       tokenBudget: 30_000,
     });
 
-    expect(countThinkingBlocks(result.messages)).toBe(0);
+    expect(countThinkingBlocks(result.messages)).toBe(2);
     expect(toolResultTexts(result.messages)).toEqual([
+      "head protected tool result 1",
+      "head protected tool result 2",
       "[pruned]",
       "[pruned]",
-      "recent tool result 1",
-      "recent tool result 2",
+      "tail protected tool result 1",
+      "tail protected tool result 2",
     ]);
     expect(toolResultDetails(result.messages)).toEqual([
+      { raw: "h".repeat(10_000) },
+      { raw: "i".repeat(10_000) },
       undefined,
       undefined,
       undefined,
@@ -166,7 +175,13 @@ describe("createContextSafeContextEngine", () => {
   });
 
   it("honors custom threshold overrides during assemble", async () => {
-    const defaultEngine = createContextSafeContextEngine();
+    const defaultEngine = createContextSafeContextEngine({
+      prune: {
+        thresholdChars: 100_000,
+        keepRecentToolResults: 2,
+        placeholder: "[pruned]",
+      },
+    });
     const customEngine = createContextSafeContextEngine({
       prune: {
         thresholdChars: 25_000,
@@ -206,7 +221,7 @@ describe("createContextSafeContextEngine", () => {
       "recent tool result 2",
     ]);
 
-    expect(countThinkingBlocks(customResult.messages)).toBe(0);
+    expect(countThinkingBlocks(customResult.messages)).toBe(1);
     expect(toolResultTexts(customResult.messages)).toEqual([
       "[pruned]",
       "[pruned]",
@@ -222,7 +237,13 @@ describe("createContextSafeContextEngine", () => {
   });
 
   it("persists canonical state on first prune and reuses it on later assemble calls for the same session", async () => {
-    const engine = createContextSafeContextEngine();
+    const engine = createContextSafeContextEngine({
+      prune: {
+        thresholdChars: 50_000,
+        keepRecentToolResults: 2,
+        placeholder: "[pruned]",
+      },
+    });
     const sessionId = "session-canonical-persistence";
     const firstMessages = canonicalMessages({
       thinkingChars: 16_000,
@@ -238,7 +259,7 @@ describe("createContextSafeContextEngine", () => {
     });
 
     expect(fs.existsSync(canonicalStatePath(sessionId))).toBe(true);
-    expect(countThinkingBlocks(firstResult.messages)).toBe(0);
+    expect(countThinkingBlocks(firstResult.messages)).toBe(1);
     expect(toolResultTexts(firstResult.messages)).toEqual([
       "[pruned]",
       "[pruned]",
@@ -259,7 +280,13 @@ describe("createContextSafeContextEngine", () => {
   });
 
   it("can trigger a later prune only after enough new canonical growth accumulates", async () => {
-    const engine = createContextSafeContextEngine();
+    const engine = createContextSafeContextEngine({
+      prune: {
+        thresholdChars: 50_000,
+        keepRecentToolResults: 2,
+        placeholder: "[pruned]",
+      },
+    });
     const sessionId = "session-canonical-retrigger";
     const baseMessages = canonicalMessages({
       thinkingChars: 16_000,
@@ -298,7 +325,7 @@ describe("createContextSafeContextEngine", () => {
       tokenBudget: 30_000,
     });
 
-    expect(countThinkingBlocks(thirdResult.messages)).toBe(0);
+    expect(countThinkingBlocks(thirdResult.messages)).toBe(1);
     expect(toolResultTexts(thirdResult.messages)).toEqual([
       "[pruned]",
       "[pruned]",
@@ -484,6 +511,73 @@ function canonicalMessages(input: {
       toolCallId: "recent-tool-2",
       content: [{ type: "text", text: "recent tool result 2" }],
     },
+  ];
+}
+
+function defaultWindowCanonicalMessages(input: {
+  thinkingChars: number;
+  thinkingOnlyChars: number;
+  oldToolTextChars: number;
+  oldToolDetailsChars: number;
+}) {
+  return [
+    { role: "user", content: "summarize the run" },
+    {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "t".repeat(input.thinkingChars) }],
+    },
+    {
+      role: "toolResult",
+      toolName: "read",
+      toolCallId: "head-tool-1",
+      content: [{ type: "text", text: "head protected tool result 1" }],
+      details: { raw: "h".repeat(input.oldToolDetailsChars) },
+    },
+    { role: "assistant", content: [{ type: "text", text: "head context" }] },
+    {
+      role: "toolResult",
+      toolName: "exec",
+      toolCallId: "head-tool-2",
+      content: [{ type: "text", text: "head protected tool result 2" }],
+      details: { raw: "i".repeat(input.oldToolDetailsChars) },
+    },
+    {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "u".repeat(input.thinkingOnlyChars) }],
+    },
+    {
+      role: "toolResult",
+      toolName: "exec",
+      toolCallId: "middle-tool-1",
+      content: [{ type: "text", text: "a".repeat(input.oldToolTextChars) }],
+      details: { raw: "d".repeat(input.oldToolDetailsChars) },
+    },
+    { role: "assistant", content: [{ type: "text", text: "middle context" }] },
+    {
+      role: "toolResult",
+      toolName: "read",
+      toolCallId: "middle-tool-2",
+      content: [{ type: "text", text: "b".repeat(input.oldToolTextChars) }],
+      details: { raw: "e".repeat(input.oldToolDetailsChars) },
+    },
+    { role: "assistant", content: [{ type: "text", text: "tail warmup" }] },
+    {
+      role: "toolResult",
+      toolName: "exec",
+      toolCallId: "tail-tool-1",
+      content: [{ type: "text", text: "tail protected tool result 1" }],
+    },
+    {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "v".repeat(input.thinkingChars) }],
+    },
+    {
+      role: "toolResult",
+      toolName: "read",
+      toolCallId: "tail-tool-2",
+      content: [{ type: "text", text: "tail protected tool result 2" }],
+    },
+    { role: "assistant", content: [{ type: "text", text: "tail context" }] },
   ];
 }
 

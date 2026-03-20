@@ -28,10 +28,15 @@
 
 当前裁剪规则：
 
-- 删除 assistant `thinking` block
-- 只保留最近 2 条 `toolResult` 原文
-- 更早的 `toolResult` 会被替换成 `[pruned]`
-- 被替换的旧 `toolResult` 会移除 `details`
+- `pruneGain` 只统计可被裁剪的消息，受保护内容不计入
+- 保护会话最开头 5 条和最后 5 条消息
+- 保护这些窗口内关联的 `toolResult`
+- 保护命中 basename 名单的 `read` 消息及其关联 `toolResult`
+- 保护名单按 basename、大小写不敏感匹配：
+  `AGENTS.md` `HEARTBEAT.md` `IDENTITY.md` `MEMORY.md` `NOW.md`
+  `SESSION-STATE.md` `SKILL.md` `SOUL.md` `TODAY.md` `TOOLS.md` `USER.md`
+- 非保护区里的 assistant `thinking` block 会被删除
+- 非保护区里的旧 `toolResult` 会被替换成 `[pruned]`，并移除 `details`
 
 ### 它为什么能省 Token
 
@@ -146,8 +151,8 @@ canonical session state 也会保存在同一 artifact 根目录下：
 ```json
 {
   "prune": {
-    "thresholdChars": 50000,
-    "keepRecentToolResults": 2,
+    "thresholdChars": 100000,
+    "keepRecentToolResults": 5,
     "placeholder": "[pruned]"
   }
 }
@@ -156,8 +161,8 @@ canonical session state 也会保存在同一 artifact 根目录下：
 OpenClaw 配置示例：
 
 ```bash
-openclaw config set plugins.entries.context-safe.config.prune.thresholdChars 50000
-openclaw config set plugins.entries.context-safe.config.prune.keepRecentToolResults 2
+openclaw config set plugins.entries.context-safe.config.prune.thresholdChars 100000
+openclaw config set plugins.entries.context-safe.config.prune.keepRecentToolResults 5
 openclaw config set plugins.entries.context-safe.config.prune.placeholder "[pruned]"
 ```
 
@@ -206,10 +211,13 @@ When the estimated `pruneGain >= thresholdChars`, the plugin prunes and persists
 
 Current prune behavior:
 
-- removes assistant `thinking` blocks
-- keeps only the most recent 2 `toolResult` messages inline
-- replaces older `toolResult` payloads with `[pruned]`
-- removes `details` from pruned older `toolResult` messages
+- `pruneGain` counts only prune-eligible messages and ignores protected content
+- protects the first 5 and last 5 messages in the session
+- protects tool results linked to those head/tail windows
+- protects `read` messages whose basename matches the protected list, case-insensitively
+- protects tool results linked to those protected `read` messages
+- prunes assistant `thinking` blocks only outside the protected set
+- replaces older unprotected `toolResult` payloads with `[pruned]` and drops `details`
 
 ### Why It Saves Tokens
 
@@ -324,8 +332,8 @@ Default configuration:
 ```json
 {
   "prune": {
-    "thresholdChars": 50000,
-    "keepRecentToolResults": 2,
+    "thresholdChars": 100000,
+    "keepRecentToolResults": 5,
     "placeholder": "[pruned]"
   }
 }
@@ -334,8 +342,8 @@ Default configuration:
 Example OpenClaw config:
 
 ```bash
-openclaw config set plugins.entries.context-safe.config.prune.thresholdChars 50000
-openclaw config set plugins.entries.context-safe.config.prune.keepRecentToolResults 2
+openclaw config set plugins.entries.context-safe.config.prune.thresholdChars 100000
+openclaw config set plugins.entries.context-safe.config.prune.keepRecentToolResults 5
 openclaw config set plugins.entries.context-safe.config.prune.placeholder "[pruned]"
 ```
 
