@@ -64,6 +64,44 @@ describe("createContextSafeContextEngine", () => {
     expect(textOf(result.messages[3])).not.toContain(PREEMPTIVE_TOOL_RESULT_COMPACTION_PLACEHOLDER);
   });
 
+  it("persists observability summary fields after assemble", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-assemble-summary";
+    const messages = [
+      { role: "user", content: "inspect this" },
+      {
+        role: "toolResult",
+        toolName: "read",
+        content: [{ type: "text", text: "important output" }],
+      },
+      { role: "assistant", content: [{ type: "text", text: "done" }] },
+    ];
+
+    await engine.assemble({
+      sessionId,
+      messages,
+      tokenBudget: 128,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      updatedAt?: string;
+      messageCount?: number;
+      toolResultCount?: number;
+      thresholdChars?: number;
+      keepRecentToolResults?: number;
+      placeholder?: string;
+      messages: Array<{ role?: string }>;
+    };
+
+    expect(savedState.updatedAt).toEqual(expect.any(String));
+    expect(savedState.messageCount).toBe(messages.length);
+    expect(savedState.toolResultCount).toBe(1);
+    expect(savedState.thresholdChars).toBe(100_000);
+    expect(savedState.keepRecentToolResults).toBe(5);
+    expect(savedState.placeholder).toBe("[pruned]");
+    expect(savedState.messages).toHaveLength(messages.length);
+  });
+
   it("compacts canonical state from the session transcript for manual compact requests", async () => {
     const info = vi.fn();
     const engine = createContextSafeContextEngine({
@@ -424,9 +462,17 @@ describe("createContextSafeContextEngine", () => {
     });
 
     const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      lastPrunedAt?: string;
+      lastPruneSource?: string;
+      lastPruneGain?: number;
+      lastThresholdChars?: number;
       messages: Array<{ role?: string; content?: unknown; details?: unknown }>;
     };
 
+    expect(savedState.lastPrunedAt).toEqual(expect.any(String));
+    expect(savedState.lastPruneSource).toBe("afterTurn");
+    expect(savedState.lastPruneGain).toBeGreaterThan(0);
+    expect(savedState.lastThresholdChars).toBe(50_000);
     expect(countThinkingBlocks(savedState.messages)).toBe(1);
     expect(toolResultTexts(savedState.messages)).toEqual([
       "[pruned]",

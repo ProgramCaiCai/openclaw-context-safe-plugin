@@ -6,13 +6,28 @@ import { type ContextSafeMessage } from "./tool-result-policy.js";
 
 const CANONICAL_SESSION_STATE_VERSION = 1;
 
+type CanonicalSessionPruneSource = "afterTurn" | "assemble" | "compact";
+
+export type CanonicalSessionPruneMetadata = {
+  lastPrunedAt: string;
+  lastPruneSource: CanonicalSessionPruneSource;
+  lastPruneGain: number;
+  lastThresholdChars: number;
+};
+
 export type CanonicalSessionState = {
   version: 1;
   sessionId: string;
   sourceMessageCount: number;
   configSnapshot: ContextSafePruneConfig;
   messages: ContextSafeMessage[];
-};
+  updatedAt: string;
+  messageCount: number;
+  toolResultCount: number;
+  thresholdChars: number;
+  keepRecentToolResults: number;
+  placeholder: string;
+} & Partial<CanonicalSessionPruneMetadata>;
 
 export async function loadCanonicalSessionState(
   sessionId: string,
@@ -70,13 +85,22 @@ export function createCanonicalSessionState(params: {
   sourceMessageCount: number;
   configSnapshot: ContextSafePruneConfig;
   messages: ContextSafeMessage[];
+  pruneMetadata?: CanonicalSessionPruneMetadata;
 }): CanonicalSessionState {
+  const messages = structuredClone(params.messages);
   return {
     version: CANONICAL_SESSION_STATE_VERSION,
     sessionId: params.sessionId,
     sourceMessageCount: params.sourceMessageCount,
     configSnapshot: params.configSnapshot,
-    messages: structuredClone(params.messages),
+    messages,
+    updatedAt: new Date().toISOString(),
+    messageCount: messages.length,
+    toolResultCount: countToolResultMessages(messages),
+    thresholdChars: params.configSnapshot.thresholdChars,
+    keepRecentToolResults: params.configSnapshot.keepRecentToolResults,
+    placeholder: params.configSnapshot.placeholder,
+    ...(params.pruneMetadata ? structuredClone(params.pruneMetadata) : {}),
   };
 }
 
@@ -96,8 +120,22 @@ function isCanonicalSessionState(value: unknown): value is CanonicalSessionState
     Number.isInteger(sourceMessageCount) &&
     sourceMessageCount >= 0 &&
     isPruneConfig(value.configSnapshot) &&
-    Array.isArray(value.messages)
+    Array.isArray(value.messages) &&
+    isOptionalIsoTimestamp(value.updatedAt) &&
+    isOptionalNonNegativeInteger(value.messageCount) &&
+    isOptionalNonNegativeInteger(value.toolResultCount) &&
+    isOptionalPositiveInteger(value.thresholdChars) &&
+    isOptionalNonNegativeInteger(value.keepRecentToolResults) &&
+    isOptionalNonEmptyString(value.placeholder) &&
+    isOptionalIsoTimestamp(value.lastPrunedAt) &&
+    isOptionalPruneSource(value.lastPruneSource) &&
+    isOptionalNonNegativeInteger(value.lastPruneGain) &&
+    isOptionalPositiveInteger(value.lastThresholdChars)
   );
+}
+
+function countToolResultMessages(messages: ContextSafeMessage[]): number {
+  return messages.filter((message) => message.role === "toolResult").length;
 }
 
 function isPruneConfig(value: unknown): value is ContextSafePruneConfig {
@@ -112,6 +150,29 @@ function isPruneConfig(value: unknown): value is ContextSafePruneConfig {
     typeof value.placeholder === "string" &&
     value.placeholder.length > 0
   );
+}
+
+function isOptionalIsoTimestamp(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && value.length > 0);
+}
+
+function isOptionalNonEmptyString(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && value.length > 0);
+}
+
+function isOptionalPositiveInteger(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isInteger(value) && value > 0);
+}
+
+function isOptionalNonNegativeInteger(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (typeof value === "number" && Number.isInteger(value) && value >= 0)
+  );
+}
+
+function isOptionalPruneSource(value: unknown): value is CanonicalSessionPruneSource | undefined {
+  return value === undefined || value === "afterTurn" || value === "assemble" || value === "compact";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

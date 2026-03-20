@@ -3,6 +3,7 @@ import {
   createCanonicalSessionState,
   loadCanonicalSessionState,
   saveCanonicalSessionState,
+  type CanonicalSessionPruneMetadata,
   type CanonicalSessionState,
 } from "./canonical-session-state.js";
 import {
@@ -144,6 +145,11 @@ export function createContextSafeContextEngine(input?: {
         sourceMessageCount: canonicalState.sourceMessageCount,
         configSnapshot: config.prune,
         messages: pruned.messages,
+        pruneMetadata: createPruneMetadata({
+          source: "compact",
+          pruneGain: pruned.pruneGain,
+          thresholdChars: params.force ? 1 : config.prune.thresholdChars,
+        }),
       });
       changed = true;
 
@@ -204,6 +210,7 @@ async function synchronizeCanonicalState(params: {
       sourceMessageCount: rawMessages.length,
       configSnapshot: params.pruneConfig,
       messages,
+      pruneMetadata: readPruneMetadata(loaded.state),
     }),
     changed,
   };
@@ -247,8 +254,46 @@ function maybePruneCanonicalState(params: {
       sourceMessageCount: params.state.sourceMessageCount,
       configSnapshot: params.pruneConfig,
       messages: pruned.messages,
+      pruneMetadata: createPruneMetadata({
+        source: params.source,
+        pruneGain: pruned.pruneGain,
+        thresholdChars: params.pruneConfig.thresholdChars,
+      }),
     }),
     changed: true,
+  };
+}
+
+function createPruneMetadata(params: {
+  source: "afterTurn" | "assemble" | "compact";
+  pruneGain: number;
+  thresholdChars: number;
+}): CanonicalSessionPruneMetadata {
+  return {
+    lastPrunedAt: new Date().toISOString(),
+    lastPruneSource: params.source,
+    lastPruneGain: params.pruneGain,
+    lastThresholdChars: params.thresholdChars,
+  };
+}
+
+function readPruneMetadata(state: CanonicalSessionState): CanonicalSessionPruneMetadata | undefined {
+  if (
+    typeof state.lastPrunedAt !== "string" ||
+    (state.lastPruneSource !== "afterTurn" &&
+      state.lastPruneSource !== "assemble" &&
+      state.lastPruneSource !== "compact") ||
+    typeof state.lastPruneGain !== "number" ||
+    typeof state.lastThresholdChars !== "number"
+  ) {
+    return undefined;
+  }
+
+  return {
+    lastPrunedAt: state.lastPrunedAt,
+    lastPruneSource: state.lastPruneSource,
+    lastPruneGain: state.lastPruneGain,
+    lastThresholdChars: state.lastThresholdChars,
   };
 }
 

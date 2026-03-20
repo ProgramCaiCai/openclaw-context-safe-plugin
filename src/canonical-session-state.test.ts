@@ -52,6 +52,16 @@ describe("canonical session state", () => {
         { role: "user", content: "hello" },
         { role: "assistant", content: [{ type: "text", text: "world" }] },
       ],
+      updatedAt: "2026-03-20T12:00:00.000Z",
+      messageCount: 2,
+      toolResultCount: 0,
+      thresholdChars: 50_000,
+      keepRecentToolResults: 2,
+      placeholder: "[pruned]",
+      lastPrunedAt: "2026-03-20T12:01:00.000Z",
+      lastPruneSource: "assemble",
+      lastPruneGain: 12_345,
+      lastThresholdChars: 50_000,
     };
 
     await saveCanonicalSessionState(state);
@@ -60,6 +70,32 @@ describe("canonical session state", () => {
       path: path.join(artifactDir, "session-state", "session-roundtrip.json"),
       needsRebuild: false,
       state,
+    });
+  });
+
+  it("loads older state files that do not have observability summary fields yet", async () => {
+    const statePath = buildCanonicalSessionStatePath("session-legacy");
+    const legacyState = {
+      version: 1,
+      sessionId: "session-legacy",
+      sourceMessageCount: 2,
+      configSnapshot: {
+        thresholdChars: 50_000,
+        keepRecentToolResults: 2,
+        placeholder: "[pruned]",
+      },
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: [{ type: "text", text: "world" }] },
+      ],
+    };
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify(legacyState, null, 2), "utf8");
+
+    await expect(loadCanonicalSessionState("session-legacy")).resolves.toEqual({
+      path: statePath,
+      needsRebuild: false,
+      state: legacyState as CanonicalSessionState,
     });
   });
 
