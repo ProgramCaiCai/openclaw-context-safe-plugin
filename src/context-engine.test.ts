@@ -359,6 +359,66 @@ describe("createContextSafeContextEngine", () => {
       },
     ]);
   });
+
+  it("prunes and persists canonical state during afterTurn for growth-heavy final turns", async () => {
+    const info = vi.fn();
+    const engine = createContextSafeContextEngine({
+      logger: { info },
+    });
+    const sessionId = "session-after-turn-prune";
+    const baseMessages = canonicalMessages({
+      thinkingChars: 16_000,
+      thinkingOnlyChars: 16_000,
+      oldToolTextChars: 9_000,
+      oldToolDetailsChars: 5_000,
+    });
+    const finalTurnMessages = appendNewCanonicalGrowth(baseMessages, {
+      thinkingChars: 18_000,
+      toolTextChars: 15_000,
+      toolDetailsChars: 7_000,
+    });
+
+    await engine.assemble({
+      sessionId,
+      messages: baseMessages,
+      tokenBudget: 30_000,
+    });
+
+    await engine.afterTurn({
+      sessionId,
+      sessionFile: "/tmp/final-turn.jsonl",
+      messages: finalTurnMessages,
+      prePromptMessageCount: baseMessages.length,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      messages: Array<{ role?: string; content?: unknown; details?: unknown }>;
+    };
+
+    expect(countThinkingBlocks(savedState.messages)).toBe(0);
+    expect(toolResultTexts(savedState.messages)).toEqual([
+      "[pruned]",
+      "[pruned]",
+      "[pruned]",
+      "[pruned]",
+      "[pruned]",
+      "[pruned]",
+      "latest tool result 1",
+      "latest tool result 2",
+    ]);
+    expect(toolResultDetails(savedState.messages)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(info).toHaveBeenCalledWith(expect.stringContaining("context-safe prune triggered"));
+    expect(info).toHaveBeenCalledWith(expect.stringContaining("source=afterTurn"));
+  });
 });
 
 function textOf(message: unknown): string {
