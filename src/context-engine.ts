@@ -48,9 +48,15 @@ export function createContextSafeContextEngine(input?: {
         rawMessages: params.messages,
         pruneConfig: config.prune,
       });
+      const canonical = maybePruneCanonicalState({
+        state: synced.state,
+        source: "afterTurn",
+        pruneConfig: config.prune,
+        logger,
+      });
 
-      if (synced.changed) {
-        await persistCanonicalState(synced.state, logger);
+      if (synced.changed || canonical.changed) {
+        await persistCanonicalState(canonical.state, logger);
       }
     },
     async assemble(params: {
@@ -63,31 +69,15 @@ export function createContextSafeContextEngine(input?: {
         rawMessages: params.messages,
         pruneConfig: config.prune,
       });
-      let canonicalState = synced.state;
-      let shouldSave = synced.changed;
-
-      const pruned = applyCanonicalPrune({
-        messages: canonicalState.messages,
-        ...config.prune,
+      const canonical = maybePruneCanonicalState({
+        state: synced.state,
+        source: "assemble",
+        pruneConfig: config.prune,
+        logger,
       });
-      if (pruned.pruned) {
-        logPruneTriggered({
-          logger,
-          source: "assemble",
-          sessionId: canonicalState.sessionId,
-          pruneGain: pruned.pruneGain,
-          thresholdChars: config.prune.thresholdChars,
-        });
-        canonicalState = createCanonicalSessionState({
-          sessionId: canonicalState.sessionId,
-          sourceMessageCount: canonicalState.sourceMessageCount,
-          configSnapshot: config.prune,
-          messages: pruned.messages,
-        });
-        shouldSave = true;
-      }
+      const canonicalState = canonical.state;
 
-      if (shouldSave) {
+      if (synced.changed || canonical.changed) {
         await persistCanonicalState(canonicalState, logger);
       }
 
@@ -230,9 +220,41 @@ async function persistCanonicalState(
   }
 }
 
+function maybePruneCanonicalState(params: {
+  state: CanonicalSessionState;
+  source: "afterTurn" | "assemble";
+  pruneConfig: ContextSafePruneConfig;
+  logger?: ContextSafeLogger;
+}): { state: CanonicalSessionState; changed: boolean } {
+  const pruned = applyCanonicalPrune({
+    messages: params.state.messages,
+    ...params.pruneConfig,
+  });
+  if (!pruned.pruned) {
+    return { state: params.state, changed: false };
+  }
+
+  logPruneTriggered({
+    logger: params.logger,
+    source: params.source,
+    sessionId: params.state.sessionId,
+    pruneGain: pruned.pruneGain,
+    thresholdChars: params.pruneConfig.thresholdChars,
+  });
+  return {
+    state: createCanonicalSessionState({
+      sessionId: params.state.sessionId,
+      sourceMessageCount: params.state.sourceMessageCount,
+      configSnapshot: params.pruneConfig,
+      messages: pruned.messages,
+    }),
+    changed: true,
+  };
+}
+
 function logPruneTriggered(params: {
   logger?: ContextSafeLogger;
-  source: "assemble" | "compact";
+  source: "afterTurn" | "assemble" | "compact";
   sessionId: string;
   pruneGain: number;
   thresholdChars: number;
