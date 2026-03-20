@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as policy from "./tool-result-policy.js";
 import {
   CONTEXT_LIMIT_TRUNCATION_NOTICE,
   PREEMPTIVE_TOOL_RESULT_COMPACTION_PLACEHOLDER,
@@ -135,4 +136,210 @@ function textOf(message: unknown): string {
     )
     .map((block) => String((block as { text?: unknown }).text ?? ""))
     .join("\n");
+}
+
+describe("prune threshold gating", () => {
+  it("skips prune when gain stays below an explicit 50000 threshold", () => {
+    const messages = canonicalMessages({
+      thinkingChars: 8_000,
+      thinkingOnlyChars: 8_000,
+      oldToolTextChars: 5_000,
+      oldToolDetailsChars: 2_000,
+    });
+    const gain = policy.estimatePruneGain({
+      messages,
+      thresholdChars: 50_000,
+      keepRecentToolResults: 2,
+      placeholder: "[pruned]",
+    });
+
+    expect(gain).toBeGreaterThan(25_000);
+    expect(gain).toBeLessThan(50_000);
+
+    const result = policy.applyCanonicalPrune({
+      messages,
+      thresholdChars: 50_000,
+      keepRecentToolResults: 2,
+      placeholder: "[pruned]",
+    });
+
+    expect(result.messages).toEqual(messages);
+  });
+
+  it("does not fire prune when the configured threshold stays above the estimated gain", () => {
+    const messages = canonicalMessages({
+      thinkingChars: 8_000,
+      thinkingOnlyChars: 8_000,
+      oldToolTextChars: 5_000,
+      oldToolDetailsChars: 2_000,
+    });
+    const gain = policy.estimatePruneGain({
+      messages,
+      thresholdChars: 50_000,
+      keepRecentToolResults: 2,
+      placeholder: "[pruned]",
+    });
+
+    expect(gain).toBeLessThan(50_000);
+
+    const result = policy.applyCanonicalPrune({
+      messages,
+      thresholdChars: 50_000,
+      keepRecentToolResults: 2,
+      placeholder: "[pruned]",
+    });
+
+    expect(result.messages).toEqual(messages);
+  });
+
+  it("fires prune when gain reaches the threshold and keeps exactly the two newest tool results inline", () => {
+    const messages = canonicalMessages({
+      thinkingChars: 16_000,
+      thinkingOnlyChars: 16_000,
+      oldToolTextChars: 9_000,
+      oldToolDetailsChars: 5_000,
+    });
+    const gain = policy.estimatePruneGain({
+      messages,
+      thresholdChars: 50_000,
+      keepRecentToolResults: 2,
+      placeholder: "[pruned]",
+    });
+
+    expect(gain).toBeGreaterThanOrEqual(50_000);
+
+    const result = policy.applyCanonicalPrune({
+      messages,
+      thresholdChars: 50_000,
+      keepRecentToolResults: 2,
+      placeholder: "[pruned]",
+    });
+
+    expect(countThinkingBlocks(result.messages)).toBe(0);
+    expect(toolResultTexts(result.messages)).toEqual([
+      "[pruned]",
+      "[pruned]",
+      "recent tool result 1",
+      "recent tool result 2",
+    ]);
+    expect(toolResultDetails(result.messages)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("allows a custom threshold to override the default gate", () => {
+    const defaultMessages = canonicalMessages({
+      thinkingChars: 8_000,
+      thinkingOnlyChars: 8_000,
+      oldToolTextChars: 5_000,
+      oldToolDetailsChars: 2_000,
+    });
+    const customMessages = canonicalMessages({
+      thinkingChars: 8_000,
+      thinkingOnlyChars: 8_000,
+      oldToolTextChars: 5_000,
+      oldToolDetailsChars: 2_000,
+    });
+
+    const defaultResult = policy.applyCanonicalPrune({
+      messages: defaultMessages,
+      thresholdChars: 50_000,
+      keepRecentToolResults: 2,
+      placeholder: "[pruned]",
+    });
+    const customResult = policy.applyCanonicalPrune({
+      messages: customMessages,
+      thresholdChars: 25_000,
+      keepRecentToolResults: 2,
+      placeholder: "[pruned]",
+    });
+
+    expect(defaultResult.messages).toEqual(defaultMessages);
+    expect(countThinkingBlocks(customResult.messages)).toBe(0);
+    expect(toolResultTexts(customResult.messages)).toEqual([
+      "[pruned]",
+      "[pruned]",
+      "recent tool result 1",
+      "recent tool result 2",
+    ]);
+    expect(toolResultDetails(customResult.messages)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+});
+
+function canonicalMessages(input: {
+  thinkingChars: number;
+  thinkingOnlyChars: number;
+  oldToolTextChars: number;
+  oldToolDetailsChars: number;
+}) {
+  return [
+    userMessage("summarize the run"),
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "working through prior context" },
+        { type: "thinking", thinking: "t".repeat(input.thinkingChars) },
+      ],
+    },
+    toolResult({
+      toolName: "exec",
+      toolCallId: "old-tool-1",
+      text: "a".repeat(input.oldToolTextChars),
+      details: { raw: "d".repeat(input.oldToolDetailsChars) },
+    }),
+    {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "u".repeat(input.thinkingOnlyChars) }],
+    },
+    toolResult({
+      toolName: "read",
+      toolCallId: "old-tool-2",
+      text: "b".repeat(input.oldToolTextChars),
+      details: { raw: "e".repeat(input.oldToolDetailsChars) },
+    }),
+    assistantMessage("continuing"),
+    toolResult({
+      toolName: "exec",
+      toolCallId: "recent-tool-1",
+      text: "recent tool result 1",
+    }),
+    toolResult({
+      toolName: "read",
+      toolCallId: "recent-tool-2",
+      text: "recent tool result 2",
+    }),
+  ];
+}
+
+function countThinkingBlocks(messages: Array<{ content?: unknown }>): number {
+  return messages.reduce((sum, message) => {
+    if (!Array.isArray(message.content)) {
+      return sum;
+    }
+    return (
+      sum +
+      message.content.filter(
+        (block) =>
+          !!block && typeof block === "object" && (block as { type?: unknown }).type === "thinking",
+      ).length
+    );
+  }, 0);
+}
+
+function toolResultTexts(messages: Array<{ role?: string; content?: unknown }>): string[] {
+  return messages.filter((message) => message.role === "toolResult").map((message) => textOf(message));
+}
+
+function toolResultDetails(messages: Array<{ role?: string; details?: unknown }>): unknown[] {
+  return messages
+    .filter((message) => message.role === "toolResult")
+    .map((message) => message.details);
 }

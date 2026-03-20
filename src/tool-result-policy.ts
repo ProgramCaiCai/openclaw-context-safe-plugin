@@ -24,6 +24,77 @@ export type ContextSafeMessage = {
   [key: string]: unknown;
 };
 
+export function estimatePruneGain(params: {
+  messages: ContextSafeMessage[];
+  thresholdChars: number;
+  keepRecentToolResults: number;
+  placeholder: string;
+}): number {
+  const protectedToolResultIndexes = findProtectedToolResultIndexes(
+    params.messages,
+    params.keepRecentToolResults,
+  );
+  let gain = 0;
+
+  for (let i = 0; i < params.messages.length; i++) {
+    const message = params.messages[i];
+
+    if (message.role === "assistant") {
+      gain += estimateThinkingChars(message);
+      continue;
+    }
+
+    if (!isToolResultMessage(message) || protectedToolResultIndexes.has(i)) {
+      continue;
+    }
+
+    const pruned = pruneToolResultMessage(message, params.placeholder);
+    gain += Math.max(0, estimateMessageChars(message) - estimateMessageChars(pruned));
+  }
+
+  return gain;
+}
+
+export function applyCanonicalPrune(params: {
+  messages: ContextSafeMessage[];
+  thresholdChars: number;
+  keepRecentToolResults: number;
+  placeholder: string;
+}): {
+  messages: ContextSafeMessage[];
+  pruneGain: number;
+  pruned: boolean;
+} {
+  const pruneGain = estimatePruneGain(params);
+  if (pruneGain < params.thresholdChars) {
+    return {
+      messages: params.messages,
+      pruneGain,
+      pruned: false,
+    };
+  }
+
+  const protectedToolResultIndexes = findProtectedToolResultIndexes(
+    params.messages,
+    params.keepRecentToolResults,
+  );
+  const messages = params.messages.map((message, index) => {
+    if (message.role === "assistant") {
+      return pruneAssistantThinking(message);
+    }
+    if (!isToolResultMessage(message) || protectedToolResultIndexes.has(index)) {
+      return message;
+    }
+    return pruneToolResultMessage(message, params.placeholder);
+  });
+
+  return {
+    messages,
+    pruneGain,
+    pruned: true,
+  };
+}
+
 export function applyContextToolResultPolicy(params: {
   messages: ContextSafeMessage[];
   contextWindowTokens: number;
@@ -91,6 +162,19 @@ function isToolResultMessage(message: ContextSafeMessage): boolean {
   return message.role === "toolResult" || message.role === "tool" || message.type === "toolResult";
 }
 
+function findProtectedToolResultIndexes(
+  messages: ContextSafeMessage[],
+  keepRecentToolResults: number,
+): Set<number> {
+  const indexes: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (isToolResultMessage(messages[i])) {
+      indexes.push(i);
+    }
+  }
+  return new Set(indexes.slice(-Math.max(0, keepRecentToolResults)));
+}
+
 function textBlocksOf(message: ContextSafeMessage): string[] {
   const content = message.content;
   if (typeof content === "string") {
@@ -156,6 +240,18 @@ function estimateMessageChars(message: ContextSafeMessage): number {
   }
 
   return estimateUnknownChars(message.content);
+}
+
+function estimateThinkingChars(message: ContextSafeMessage): number {
+  if (!Array.isArray(message.content)) {
+    return 0;
+  }
+  return message.content.reduce((sum, block) => {
+    if (!isThinkingBlock(block)) {
+      return sum;
+    }
+    return sum + String(block.thinking ?? "").length;
+  }, 0);
 }
 
 function estimateContextChars(messages: ContextSafeMessage[]): number {
@@ -314,6 +410,33 @@ function replaceToolResultText(message: ContextSafeMessage, text: string): Conte
     ...rest,
     content,
   };
+}
+
+function pruneToolResultMessage(message: ContextSafeMessage, placeholder: string): ContextSafeMessage {
+  return replaceToolResultText(message, placeholder);
+}
+
+function pruneAssistantThinking(message: ContextSafeMessage): ContextSafeMessage {
+  if (!Array.isArray(message.content)) {
+    return message;
+  }
+
+  const content = message.content.filter((block) => !isThinkingBlock(block));
+  if (content.length > 0) {
+    return {
+      ...message,
+      content,
+    };
+  }
+
+  return {
+    ...message,
+    content: [{ type: "text", text: "" }],
+  };
+}
+
+function isThinkingBlock(value: unknown): value is { type: "thinking"; thinking?: unknown } {
+  return !!value && typeof value === "object" && (value as { type?: unknown }).type === "thinking";
 }
 
 function truncateToolResultToChars(

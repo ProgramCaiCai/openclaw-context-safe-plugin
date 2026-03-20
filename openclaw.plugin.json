@@ -3,10 +3,32 @@
   "name": "Context Safe",
   "description": "Tool-result context safety plugin.",
   "kind": "context-engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "prune": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "thresholdChars": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 50000
+          },
+          "keepRecentToolResults": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 2
+          },
+          "placeholder": {
+            "type": "string",
+            "minLength": 1,
+            "default": "[pruned]"
+          }
+        }
+      }
+    }
   }
 }

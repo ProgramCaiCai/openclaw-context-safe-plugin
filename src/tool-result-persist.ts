@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { resolveContextSafeArtifactBaseDir } from "./artifact-dir.js";
 import { resolveToolResultRecoveryHint } from "./tool-result-notices.js";
 
 const MAX_PERSISTED_DETAILS_CHARS = 4_096;
@@ -365,15 +365,7 @@ function writeArtifactSync(params: {
 }
 
 function resolveArtifactBaseDir(): string {
-  const override = asTrimmedString(process.env.OPENCLAW_CONTEXT_SAFE_ARTIFACT_DIR);
-  if (override) {
-    return override;
-  }
-  const homeDir = os.homedir();
-  if (homeDir) {
-    return path.join(homeDir, ".openclaw", "artifacts", "context-safe");
-  }
-  return path.join(os.tmpdir(), "openclaw", "artifacts", "context-safe");
+  return resolveContextSafeArtifactBaseDir();
 }
 
 function sanitizePathSegment(value?: string): string {

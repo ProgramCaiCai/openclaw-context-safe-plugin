@@ -1,3 +1,4 @@
+import { normalizeContextSafeEngineConfig } from "./src/config.js";
 import { createContextSafeContextEngine } from "./src/context-engine.js";
 import { applyBeforeToolCallSafety, applyToolResultPersistSafety } from "./src/hooks.js";
 
@@ -16,7 +17,14 @@ const plugin = {
   name: "Context Safe",
   description: "Tool-result context safety plugin for OpenClaw.",
   register(api: ContextSafePluginApi) {
-    api.registerContextEngine("context-safe", () => createContextSafeContextEngine());
+    const config = normalizeContextSafeEngineConfig((api as { pluginConfig?: unknown }).pluginConfig);
+
+    api.registerContextEngine("context-safe", () =>
+      createContextSafeContextEngine({
+        ...config,
+        logger: (api as { logger?: { warn?: (message: string) => void } }).logger,
+      }),
+    );
     api.on("before_tool_call", (event) => ({
       params: applyBeforeToolCallSafety(
         event as { toolName: string; params: Record<string, unknown> },

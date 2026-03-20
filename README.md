@@ -18,7 +18,20 @@
 - 给 `web_fetch` 自动补默认安全参数：`maxChars=12000`
 - 在 `tool_result_persist` 阶段把超大的 `exec` / `bash` / `web_fetch` / `read` 结果改写成“小预览 + artifact 路径”
 - 把过大的 `details` 压缩成有界元数据，避免 transcript 被大对象撑爆
-- 在 `contextEngine.assemble()` 阶段再次做 tool result 截断和上下文压缩，防止单条工具结果吞掉整个 context window
+- 在 `contextEngine.assemble()` 阶段维护插件自有的 canonical context transcript，并在达到阈值后做一次可持续的上下文裁剪
+
+### Canonical Context Transcript
+
+插件不会改写 OpenClaw 原始 transcript。它会为每个 `sessionId` 维护一份插件自有的 canonical context transcript，用来决定后续每轮真正送进模型的上下文。
+
+当估算出来的 `pruneGain >= thresholdChars` 时，插件会把 canonical transcript 裁剪并持久化，因此后续请求看到的就是裁剪后的基线，而不是再次从原始历史重复计算同一批噪声。
+
+当前裁剪规则：
+
+- 删除 assistant `thinking` block
+- 只保留最近 2 条 `toolResult` 原文
+- 更早的 `toolResult` 会被替换成 `[pruned]`
+- 被替换的旧 `toolResult` 会移除 `details`
 
 ### 它为什么能省 Token
 
@@ -32,6 +45,8 @@
   原始大对象会被压缩成小型元数据，避免下一轮又把大 JSON 带回上下文。
 - 官方上下文组装前会再做一次预算控制
   `contextEngine` 会对大 tool result 做第二次裁剪和必要的 compact。
+- canonical transcript 会在第一次触发阈值后变成新的基线
+  同一批历史 `thinking` 和旧 tool output 不会每轮都重新贡献一次 `pruneGain`。
 - 未来轮次看到的是“怎么继续追查”，不是整段原始噪声
   对模型更有价值，也更稳定。
 
@@ -118,6 +133,34 @@ openclaw plugins uninstall context-safe --force
 export OPENCLAW_CONTEXT_SAFE_ARTIFACT_DIR=/custom/path
 ```
 
+canonical session state 也会保存在同一 artifact 根目录下：
+
+```text
+~/.openclaw/artifacts/context-safe/session-state/<sessionId>.json
+```
+
+### Prune 配置
+
+默认配置：
+
+```json
+{
+  "prune": {
+    "thresholdChars": 50000,
+    "keepRecentToolResults": 2,
+    "placeholder": "[pruned]"
+  }
+}
+```
+
+OpenClaw 配置示例：
+
+```bash
+openclaw config set plugins.entries.context-safe.config.prune.thresholdChars 50000
+openclaw config set plugins.entries.context-safe.config.prune.keepRecentToolResults 2
+openclaw config set plugins.entries.context-safe.config.prune.placeholder "[pruned]"
+```
+
 ### 开发与验证
 
 ```bash
@@ -153,7 +196,20 @@ Important detail: official `v2026.3.8` does not expose an `excludeFromContext` p
 - adds a safe default for `web_fetch`: `maxChars=12000`
 - rewrites oversized `exec` / `bash` / `web_fetch` / `read` results during `tool_result_persist` into a short preview plus artifact path
 - compacts oversized `details` into bounded metadata
-- enforces a second tool-result truncation and compaction pass in `contextEngine.assemble()`
+- maintains a plugin-owned canonical context transcript in `contextEngine.assemble()` and applies durable prune decisions once the threshold is crossed
+
+### Canonical Context Transcript
+
+The plugin does not rewrite OpenClaw's raw transcript. Instead, it keeps a plugin-owned canonical context transcript per `sessionId` and uses that canonical state for future model-context assembly.
+
+When the estimated `pruneGain >= thresholdChars`, the plugin prunes and persists the canonical transcript. Future requests then start from the pruned baseline instead of recalculating against the same historical noise every turn.
+
+Current prune behavior:
+
+- removes assistant `thinking` blocks
+- keeps only the most recent 2 `toolResult` messages inline
+- replaces older `toolResult` payloads with `[pruned]`
+- removes `details` from pruned older `toolResult` messages
 
 ### Why It Saves Tokens
 
@@ -167,6 +223,8 @@ It reduces token usage in four ways:
   Large JSON blobs do not keep flowing back into future turns.
 - the context engine enforces another budget pass before model execution
   Oversized tool results are truncated or compacted again during context assembly.
+- the canonical transcript becomes the new baseline after the first thresholded prune
+  The same historical `thinking` and old tool output stop re-triggering the same prune work on every request.
 - future turns keep the actionable trace, not the raw noise
   The model sees how to continue investigation instead of being forced to ingest the full payload again.
 
@@ -251,6 +309,34 @@ Override it during development or tests with:
 
 ```bash
 export OPENCLAW_CONTEXT_SAFE_ARTIFACT_DIR=/custom/path
+```
+
+Canonical session state is stored under the same artifact root:
+
+```text
+~/.openclaw/artifacts/context-safe/session-state/<sessionId>.json
+```
+
+### Prune Configuration
+
+Default configuration:
+
+```json
+{
+  "prune": {
+    "thresholdChars": 50000,
+    "keepRecentToolResults": 2,
+    "placeholder": "[pruned]"
+  }
+}
+```
+
+Example OpenClaw config:
+
+```bash
+openclaw config set plugins.entries.context-safe.config.prune.thresholdChars 50000
+openclaw config set plugins.entries.context-safe.config.prune.keepRecentToolResults 2
+openclaw config set plugins.entries.context-safe.config.prune.placeholder "[pruned]"
 ```
 
 ### Development and Verification

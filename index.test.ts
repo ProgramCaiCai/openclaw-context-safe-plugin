@@ -159,6 +159,103 @@ describe("context-safe plugin registration", () => {
         : false,
     ).toBe(true);
   });
+
+  it("passes plugin prune config into the registered context engine factory", async () => {
+    let contextEngineFactory: (() => unknown) | undefined;
+
+    plugin.register?.({
+      id: "context-safe",
+      name: "Context Safe",
+      description: "Context Safe",
+      source: "test",
+      config: {},
+      pluginConfig: {
+        prune: {
+          thresholdChars: 25_000,
+          keepRecentToolResults: 2,
+          placeholder: "[pruned]",
+        },
+      },
+      runtime: {} as never,
+      logger: {
+        info() {},
+        warn() {},
+        error() {},
+      },
+      registerTool() {},
+      registerHook() {},
+      registerHttpRoute() {},
+      registerChannel() {},
+      registerGatewayMethod() {},
+      registerCli() {},
+      registerService() {},
+      registerProvider() {},
+      registerCommand() {},
+      registerContextEngine(_id: string, factory: () => unknown) {
+        contextEngineFactory = factory;
+      },
+      resolvePath(input: string) {
+        return input;
+      },
+      on() {},
+    });
+
+    const engine = contextEngineFactory?.() as {
+      assemble: (params: {
+        sessionId: string;
+        messages: Array<Record<string, unknown>>;
+        tokenBudget?: number;
+      }) => Promise<{ messages: Array<Record<string, unknown>> }>;
+    };
+    const assembled = await engine.assemble({
+      sessionId: "session-configured-threshold",
+      tokenBudget: 30_000,
+      messages: [
+        { role: "user", content: "summarize the run" },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "working through prior context" },
+            { type: "thinking", thinking: "t".repeat(8_000) },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolName: "exec",
+          toolCallId: "old-tool-1",
+          content: [{ type: "text", text: "a".repeat(5_000) }],
+          details: { raw: "d".repeat(2_000) },
+        },
+        {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "u".repeat(8_000) }],
+        },
+        {
+          role: "toolResult",
+          toolName: "read",
+          toolCallId: "old-tool-2",
+          content: [{ type: "text", text: "b".repeat(5_000) }],
+          details: { raw: "e".repeat(2_000) },
+        },
+        { role: "assistant", content: [{ type: "text", text: "continuing" }] },
+        {
+          role: "toolResult",
+          toolName: "exec",
+          toolCallId: "recent-tool-1",
+          content: [{ type: "text", text: "recent tool result 1" }],
+        },
+        {
+          role: "toolResult",
+          toolName: "read",
+          toolCallId: "recent-tool-2",
+          content: [{ type: "text", text: "recent tool result 2" }],
+        },
+      ],
+    });
+
+    expect(textOf(assembled.messages[2])).toBe("[pruned]");
+    expect(textOf(assembled.messages[4])).toBe("[pruned]");
+  });
 });
 
 function textOf(message: unknown): string {
