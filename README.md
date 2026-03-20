@@ -35,7 +35,7 @@
 - 保护名单按 basename、大小写不敏感匹配：
   `AGENTS.md` `HEARTBEAT.md` `IDENTITY.md` `MEMORY.md` `NOW.md`
   `SESSION-STATE.md` `SKILL.md` `SOUL.md` `TODAY.md` `TOOLS.md` `USER.md`
-- 非保护区里的 assistant `thinking` block 会被删除
+- 非保护区里的 assistant `thinking` / `reasoning` block 会被删除
 - 非保护区里的旧 `toolResult` 会被替换成 `[pruned]`，并移除 `details`
 
 ### 它为什么能省 Token
@@ -51,7 +51,7 @@
 - 官方上下文组装前会再做一次预算控制
   `contextEngine` 会对大 tool result 做第二次裁剪和必要的 compact。
 - canonical transcript 会在第一次触发阈值后变成新的基线
-  同一批历史 `thinking` 和旧 tool output 不会每轮都重新贡献一次 `pruneGain`。
+  同一批历史 `thinking` / `reasoning` 和旧 tool output 不会每轮都重新贡献一次 `pruneGain`。
 - 未来轮次看到的是“怎么继续追查”，不是整段原始噪声
   对模型更有价值，也更稳定。
 
@@ -216,7 +216,7 @@ Current prune behavior:
 - protects tool results linked to those head/tail windows
 - protects `read` messages whose basename matches the protected list, case-insensitively
 - protects tool results linked to those protected `read` messages
-- prunes assistant `thinking` blocks only outside the protected set
+- prunes assistant `thinking` / `reasoning` blocks only outside the protected set
 - replaces older unprotected `toolResult` payloads with `[pruned]` and drops `details`
 
 ### Why It Saves Tokens
@@ -232,7 +232,7 @@ It reduces token usage in four ways:
 - the context engine enforces another budget pass before model execution
   Oversized tool results are truncated or compacted again during context assembly.
 - the canonical transcript becomes the new baseline after the first thresholded prune
-  The same historical `thinking` and old tool output stop re-triggering the same prune work on every request.
+  The same historical `thinking` / `reasoning` and old tool output stop re-triggering the same prune work on every request.
 - future turns keep the actionable trace, not the raw noise
   The model sees how to continue investigation instead of being forced to ingest the full payload again.
 

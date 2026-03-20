@@ -287,6 +287,74 @@ describe("prune threshold gating", () => {
     ]);
   });
 
+  it("counts and prunes assistant reasoning blocks the same as thinking blocks", () => {
+    const messages = [
+      userMessage("summarize"),
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "working" },
+          { type: "reasoning", thinking: "r".repeat(12_000) },
+        ],
+      },
+      toolResult({
+        toolName: "exec",
+        toolCallId: "old-tool-1",
+        text: "a".repeat(9_000),
+        details: { raw: "d".repeat(5_000) },
+      }),
+      {
+        role: "assistant",
+        content: [{ type: "reasoning", thinking: "s".repeat(12_000) }],
+      },
+      toolResult({
+        toolName: "read",
+        toolCallId: "old-tool-2",
+        text: "b".repeat(9_000),
+        details: { raw: "e".repeat(5_000) },
+      }),
+      assistantMessage("middle context"),
+      userMessage("follow-up"),
+      assistantMessage("still going"),
+      toolResult({
+        toolName: "exec",
+        toolCallId: "recent-tool-1",
+        text: "recent tool result 1",
+      }),
+      toolResult({
+        toolName: "read",
+        toolCallId: "recent-tool-2",
+        text: "recent tool result 2",
+      }),
+    ];
+
+    const gain = policy.estimatePruneGain({
+      messages,
+      thresholdChars: 50_000,
+      keepRecentToolResults: 2,
+      placeholder: "[pruned]",
+    });
+
+    expect(gain).toBeGreaterThanOrEqual(50_000);
+
+    const result = policy.applyCanonicalPrune({
+      messages,
+      thresholdChars: 50_000,
+      keepRecentToolResults: 2,
+      placeholder: "[pruned]",
+    });
+
+    expect(countThinkingBlocks(result.messages)).toBe(1);
+    expect(textOf(result.messages[1])).toBe("working");
+    expect(textOf(result.messages[3])).toBe("");
+    expect(toolResultTexts(result.messages)).toEqual([
+      "[pruned]",
+      "[pruned]",
+      "recent tool result 1",
+      "recent tool result 2",
+    ]);
+  });
+
   it("protects head and tail windows plus basename-matched read messages and linked tool results", () => {
     const messages = [
       userMessage("session start"),
@@ -435,7 +503,9 @@ function countThinkingBlocks(messages: Array<{ content?: unknown }>): number {
       sum +
       message.content.filter(
         (block) =>
-          !!block && typeof block === "object" && (block as { type?: unknown }).type === "thinking",
+          !!block &&
+          typeof block === "object" &&
+          ["thinking", "reasoning"].includes(String((block as { type?: unknown }).type ?? "")),
       ).length
     );
   }, 0);

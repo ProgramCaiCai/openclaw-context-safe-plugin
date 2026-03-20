@@ -278,10 +278,10 @@ function estimateThinkingChars(message: ContextSafeMessage): number {
     return 0;
   }
   return message.content.reduce((sum, block) => {
-    if (!isThinkingBlock(block)) {
+    if (!isThinkingLikeBlock(block)) {
       return sum;
     }
-    return sum + String(block.thinking ?? "").length;
+    return sum + getThinkingLikeChars(block);
   }, 0);
 }
 
@@ -544,7 +544,7 @@ function pruneAssistantThinking(message: ContextSafeMessage): ContextSafeMessage
     return message;
   }
 
-  const content = message.content.filter((block) => !isThinkingBlock(block));
+  const content = message.content.filter((block) => !isThinkingLikeBlock(block));
   if (content.length > 0) {
     return {
       ...message,
@@ -558,8 +558,18 @@ function pruneAssistantThinking(message: ContextSafeMessage): ContextSafeMessage
   };
 }
 
-function isThinkingBlock(value: unknown): value is { type: "thinking"; thinking?: unknown } {
-  return !!value && typeof value === "object" && (value as { type?: unknown }).type === "thinking";
+function getThinkingLikeChars(value: { thinking?: unknown; reasoning?: unknown; text?: unknown }): number {
+  return String(value.thinking ?? value.reasoning ?? value.text ?? "").length;
+}
+
+function isThinkingLikeBlock(
+  value: unknown,
+): value is { type: "thinking" | "reasoning"; thinking?: unknown; reasoning?: unknown; text?: unknown } {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const type = (value as { type?: unknown }).type;
+  return type === "thinking" || type === "reasoning";
 }
 
 function truncateToolResultToChars(
