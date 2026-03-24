@@ -1,5 +1,7 @@
 # OpenClaw Context Safe Plugin
 
+[![Hypercommit](https://img.shields.io/badge/Hypercommit-DB2475)](https://hypercommit.com/openclaw-context-safe-plugin)
+
 ## 中文说明
 
 `context-safe` 是一个面向官方 OpenClaw 的独立实现插件，提供可安装、可卸载、可独立维护的 context-safe 能力，并且不修改 OpenClaw 核心代码。
