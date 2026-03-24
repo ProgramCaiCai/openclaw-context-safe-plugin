@@ -4,6 +4,7 @@ import {
   CONTEXT_LIMIT_TRUNCATION_NOTICE,
   PREEMPTIVE_TOOL_RESULT_COMPACTION_PLACEHOLDER,
   applyContextToolResultPolicy,
+  classifyCanonicalRetentionTier,
 } from "./tool-result-policy.js";
 
 describe("applyContextToolResultPolicy", () => {
@@ -627,3 +628,64 @@ function toolResultDetails(messages: Array<{ role?: string; details?: unknown }>
     .filter((message) => message.role === "toolResult")
     .map((message) => message.details);
 }
+
+
+describe("classifyCanonicalRetentionTier", () => {
+  it("classifies a recent user intent message as critical", () => {
+    expect(
+      classifyCanonicalRetentionTier({
+        message: userMessage("Please keep the final recommendation focused on the canonical transcript policy."),
+        messageIndex: 9,
+        totalMessages: 12,
+      }),
+    ).toBe("critical");
+  });
+
+  it("classifies a report-path verdict summary as critical", () => {
+    expect(
+      classifyCanonicalRetentionTier({
+        message: assistantMessage(
+          "Verdict: pass. Rollout is ready. Report: reports/context-safe-v2-canonical-policy-2026-03-24/index.md", 
+        ),
+        messageIndex: 6,
+        totalMessages: 20,
+      }),
+    ).toBe("critical");
+  });
+
+  it("classifies long tool-result chatter as compressible", () => {
+    expect(
+      classifyCanonicalRetentionTier({
+        message: toolResult({
+          toolName: "exec",
+          text: [
+            "running verification",
+            "status: still working",
+            "debug progress",
+            "status: still working",
+            "debug progress",
+            "status: still working",
+          ].join("\n"),
+        }),
+        messageIndex: 4,
+        totalMessages: 20,
+      }),
+    ).toBe("compressible");
+  });
+
+  it("classifies old metadata-wrapper text as foldFirst", () => {
+    expect(
+      classifyCanonicalRetentionTier({
+        message: userMessage([
+          "Conversation info (untrusted metadata)",
+          '{"channel":"telegram","chat_type":"direct","chat_id":"440811495"}',
+          "Sender (untrusted metadata)",
+          '{"id":"440811495","display_name":"编程菜菜"}',
+          "Please continue from the last result.",
+        ].join("\n")),
+        messageIndex: 1,
+        totalMessages: 20,
+      }),
+    ).toBe("foldFirst");
+  });
+});

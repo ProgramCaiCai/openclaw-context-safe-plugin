@@ -1,3 +1,8 @@
+import {
+  DEFAULT_RETENTION_TIER_COMPRESSIBLE,
+  DEFAULT_RETENTION_TIER_CRITICAL,
+  DEFAULT_RETENTION_TIER_FOLD_FIRST,
+} from "./config.js";
 import { resolveToolResultRecoveryHint } from "./tool-result-notices.js";
 
 export const CONTEXT_LIMIT_TRUNCATION_NOTICE = "[truncated: output exceeded context limit]";
@@ -36,6 +41,41 @@ export type ContextSafeMessage = {
   tool_call_id?: string;
   [key: string]: unknown;
 };
+
+export function classifyCanonicalRetentionTier(params: {
+  message: ContextSafeMessage;
+  messageIndex: number;
+  totalMessages: number;
+}): "critical" | "compressible" | "foldFirst" {
+  const text = collectMessageText(params.message).toLowerCase();
+  const tailDistance = Math.max(0, params.totalMessages - params.messageIndex - 1);
+
+  if (
+    params.message.role === "user" &&
+    tailDistance <= 3 &&
+    !containsAny(text, DEFAULT_RETENTION_TIER_FOLD_FIRST) &&
+    containsAny(text, DEFAULT_RETENTION_TIER_CRITICAL)
+  ) {
+    return "critical";
+  }
+
+  if (
+    /(?:^|\s)reports\/\S+/i.test(text) &&
+    /\b(?:verdict|outcome)\s*:/i.test(text)
+  ) {
+    return "critical";
+  }
+
+  if (containsAny(text, DEFAULT_RETENTION_TIER_FOLD_FIRST) && tailDistance > 3) {
+    return "foldFirst";
+  }
+
+  if (isToolResultMessage(params.message) && isCompressibleToolResultText(text)) {
+    return "compressible";
+  }
+
+  return "compressible";
+}
 
 export function estimatePruneGain(params: {
   messages: ContextSafeMessage[];
@@ -222,6 +262,13 @@ function textBlocksOf(message: ContextSafeMessage): string[] {
     .map((block) => String((block as { text?: unknown }).text ?? ""));
 }
 
+function collectMessageText(message: ContextSafeMessage): string {
+  if (typeof message.content === "string") {
+    return message.content;
+  }
+  return textBlocksOf(message).join("\n");
+}
+
 function getToolResultText(message: ContextSafeMessage): string {
   return textBlocksOf(message).join("\n");
 }
@@ -379,6 +426,23 @@ function extractPathCandidates(value: unknown): string[] {
     asTrimmedString(value.file_path),
   ];
   return candidates.filter((candidate): candidate is string => !!candidate);
+}
+
+function containsAny(text: string, candidates: readonly string[]): boolean {
+  return candidates.some((candidate) => text.includes(candidate.toLowerCase()));
+}
+
+function isCompressibleToolResultText(text: string): boolean {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim().toLowerCase())
+    .filter((line) => line.length > 0);
+  const repeatedLineCount = lines.length - new Set(lines).size;
+  return (
+    lines.length >= 4 &&
+    repeatedLineCount >= 2 &&
+    containsAny(text, DEFAULT_RETENTION_TIER_COMPRESSIBLE)
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

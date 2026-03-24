@@ -5,6 +5,27 @@ export const DEFAULT_RUNTIME_CHURN_ENABLED = true;
 export const DEFAULT_COLLAPSE_COMPACTION_SUMMARIES = true;
 export const DEFAULT_COLLAPSE_CHILD_COMPLETION_INJECTIONS = true;
 export const DEFAULT_COLLAPSE_DIRECT_CHAT_METADATA = true;
+export const DEFAULT_RETENTION_TIERS_ENABLED = true;
+export const DEFAULT_RETENTION_TIER_CRITICAL = [
+  "please",
+  "keep",
+  "focus",
+  "continue",
+  "recommendation",
+  "verdict:",
+  "outcome:",
+  "report:",
+] as const;
+export const DEFAULT_RETENTION_TIER_COMPRESSIBLE = [
+  "running verification",
+  "status: still working",
+  "debug progress",
+] as const;
+export const DEFAULT_RETENTION_TIER_FOLD_FIRST = [
+  "conversation info (untrusted metadata)",
+  "sender (untrusted metadata)",
+  "telegram direct chat metadata",
+] as const;
 
 export type ContextSafePruneConfig = {
   thresholdChars: number;
@@ -19,16 +40,31 @@ export type ContextSafeRuntimeChurnConfig = {
   collapseDirectChatMetadata: boolean;
 };
 
+export type ContextSafeRetentionTiersConfig = {
+  enabled: boolean;
+  critical: string[];
+  compressible: string[];
+  foldFirst: string[];
+};
+
+export type ContextSafeSessionMode =
+  | "direct-chat"
+  | "background-subagent"
+  | "acp-run"
+  | "default";
+
 export type ContextSafeEngineConfig = {
   prune: ContextSafePruneConfig;
   runtimeChurn: ContextSafeRuntimeChurnConfig;
+  retentionTiers?: ContextSafeRetentionTiersConfig;
 };
 
 export function normalizeContextSafeEngineConfig(input?: unknown): ContextSafeEngineConfig {
   const root = asRecord(input);
   const prune = asRecord(root?.prune);
   const runtimeChurn = asRecord(root?.runtimeChurn);
-  return {
+  const retentionTiers = asRecord(root?.retentionTiers);
+  const normalized: ContextSafeEngineConfig = {
     prune: {
       thresholdChars: readPositiveInteger(
         prune?.thresholdChars,
@@ -69,6 +105,33 @@ export function normalizeContextSafeEngineConfig(input?: unknown): ContextSafeEn
       ),
     },
   };
+
+  if (root) {
+    normalized.retentionTiers = {
+      enabled: readBoolean(
+        retentionTiers?.enabled,
+        DEFAULT_RETENTION_TIERS_ENABLED,
+        "retentionTiers.enabled",
+      ),
+      critical: readStringArray(
+        retentionTiers?.critical,
+        DEFAULT_RETENTION_TIER_CRITICAL,
+        "retentionTiers.critical",
+      ),
+      compressible: readStringArray(
+        retentionTiers?.compressible,
+        DEFAULT_RETENTION_TIER_COMPRESSIBLE,
+        "retentionTiers.compressible",
+      ),
+      foldFirst: readStringArray(
+        retentionTiers?.foldFirst,
+        DEFAULT_RETENTION_TIER_FOLD_FIRST,
+        "retentionTiers.foldFirst",
+      ),
+    };
+  }
+
+  return normalized;
 }
 
 export function samePruneConfig(
@@ -138,4 +201,14 @@ function readBoolean(value: unknown, fallback: boolean, label: string): boolean 
     throw new TypeError(`${label} must be a boolean`);
   }
   return value;
+}
+
+function readStringArray(value: unknown, fallback: readonly string[], label: string): string[] {
+  if (value === undefined) {
+    return [...fallback];
+  }
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || entry.trim().length === 0)) {
+    throw new TypeError(`${label} must be an array of non-empty strings`);
+  }
+  return value.map((entry) => entry.trim());
 }

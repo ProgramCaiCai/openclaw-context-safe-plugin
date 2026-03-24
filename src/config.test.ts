@@ -5,6 +5,10 @@ import {
   DEFAULT_COLLAPSE_DIRECT_CHAT_METADATA,
   DEFAULT_KEEP_RECENT_TOOL_RESULTS,
   DEFAULT_PRUNE_THRESHOLD_CHARS,
+  DEFAULT_RETENTION_TIERS_ENABLED,
+  DEFAULT_RETENTION_TIER_COMPRESSIBLE,
+  DEFAULT_RETENTION_TIER_CRITICAL,
+  DEFAULT_RETENTION_TIER_FOLD_FIRST,
   DEFAULT_RUNTIME_CHURN_ENABLED,
   normalizeContextSafeEngineConfig,
 } from "./config.js";
@@ -53,6 +57,40 @@ describe("context-safe config", () => {
         collapseCompactionSummaries: false,
         collapseChildCompletionInjections: true,
         collapseDirectChatMetadata: false,
+      },
+      retentionTiers: {
+        enabled: DEFAULT_RETENTION_TIERS_ENABLED,
+        critical: [...DEFAULT_RETENTION_TIER_CRITICAL],
+        compressible: [...DEFAULT_RETENTION_TIER_COMPRESSIBLE],
+        foldFirst: [...DEFAULT_RETENTION_TIER_FOLD_FIRST],
+      },
+    });
+  });
+
+  it("normalizes retention tiers when enabled with explicit defaults", () => {
+    expect(
+      normalizeContextSafeEngineConfig({
+        retentionTiers: {
+          enabled: true,
+        },
+      }),
+    ).toEqual({
+      prune: {
+        thresholdChars: 100_000,
+        keepRecentToolResults: 5,
+        placeholder: "[pruned]",
+      },
+      runtimeChurn: {
+        enabled: true,
+        collapseCompactionSummaries: true,
+        collapseChildCompletionInjections: true,
+        collapseDirectChatMetadata: true,
+      },
+      retentionTiers: {
+        enabled: true,
+        critical: [...DEFAULT_RETENTION_TIER_CRITICAL],
+        compressible: [...DEFAULT_RETENTION_TIER_COMPRESSIBLE],
+        foldFirst: [...DEFAULT_RETENTION_TIER_FOLD_FIRST],
       },
     });
   });

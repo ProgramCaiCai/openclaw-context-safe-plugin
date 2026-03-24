@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveContextSafeArtifactBaseDir } from "./artifact-dir.js";
-import { type ContextSafePruneConfig } from "./config.js";
+import { type ContextSafePruneConfig, type ContextSafeSessionMode } from "./config.js";
 import { type RuntimeChurnKind } from "./runtime-churn-policy.js";
 import { type ContextSafeMessage } from "./tool-result-policy.js";
 
@@ -25,6 +25,7 @@ export type CanonicalSessionState = {
   version: 1;
   sessionId: string;
   sourceMessageCount: number;
+  sessionMode?: ContextSafeSessionMode;
   configSnapshot: ContextSafePruneConfig;
   messages: ContextSafeMessage[];
   updatedAt: string;
@@ -90,6 +91,7 @@ export function buildCanonicalSessionStatePath(sessionId: string): string {
 export function createCanonicalSessionState(params: {
   sessionId: string;
   sourceMessageCount: number;
+  sessionMode?: ContextSafeSessionMode;
   configSnapshot: ContextSafePruneConfig;
   messages: ContextSafeMessage[];
   pruneMetadata?: CanonicalSessionPruneMetadata;
@@ -103,6 +105,7 @@ export function createCanonicalSessionState(params: {
     version: CANONICAL_SESSION_STATE_VERSION,
     sessionId: params.sessionId,
     sourceMessageCount: params.sourceMessageCount,
+    ...(params.sessionMode ? { sessionMode: params.sessionMode } : {}),
     configSnapshot: params.configSnapshot,
     messages,
     updatedAt: new Date().toISOString(),
@@ -128,6 +131,7 @@ function isCanonicalSessionState(value: unknown): value is CanonicalSessionState
   return (
     value.version === CANONICAL_SESSION_STATE_VERSION &&
     typeof value.sessionId === "string" &&
+    isOptionalSessionMode(value.sessionMode) &&
     typeof sourceMessageCount === "number" &&
     Number.isInteger(sourceMessageCount) &&
     sourceMessageCount >= 0 &&
@@ -208,6 +212,16 @@ function isOptionalRuntimeChurnKinds(value: unknown): value is RuntimeChurnKind[
           entry === "childCompletionInjection" ||
           entry === "telegramDirectChatMetadata",
       ))
+  );
+}
+
+function isOptionalSessionMode(value: unknown): value is ContextSafeSessionMode | undefined {
+  return (
+    value === undefined ||
+    value === "direct-chat" ||
+    value === "background-subagent" ||
+    value === "acp-run" ||
+    value === "default"
   );
 }
 

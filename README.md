@@ -163,6 +163,29 @@ canonical session state 也会保存在同一 artifact 根目录下：
     "collapseCompactionSummaries": true,
     "collapseChildCompletionInjections": true,
     "collapseDirectChatMetadata": true
+  },
+  "retentionTiers": {
+    "enabled": true,
+    "critical": [
+      "please",
+      "keep",
+      "focus",
+      "continue",
+      "recommendation",
+      "verdict:",
+      "outcome:",
+      "report:"
+    ],
+    "compressible": [
+      "running verification",
+      "status: still working",
+      "debug progress"
+    ],
+    "foldFirst": [
+      "conversation info (untrusted metadata)",
+      "sender (untrusted metadata)",
+      "telegram direct chat metadata"
+    ]
   }
 }
 ```
@@ -177,7 +200,14 @@ openclaw config set plugins.entries.context-safe.config.runtimeChurn.enabled tru
 openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseCompactionSummaries true
 openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseChildCompletionInjections true
 openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseDirectChatMetadata true
+openclaw config set plugins.entries.context-safe.config.retentionTiers.enabled true
 ```
+
+`retentionTiers` 提供 canonical transcript 的窄规则分层提示：
+
+- `critical`：优先保留最近尾部的非包装型用户意图，以及带 `verdict:` / `outcome:` 和 `reports/...` 路径的结论摘要
+- `compressible`：压缩长且重复的 tool-result chatter
+- `foldFirst`：优先折叠旧的 metadata-wrapper 文本
 
 canonical session state 会额外记录两组轻量观测字段：
 
@@ -228,6 +258,13 @@ Important detail: official `v2026.3.8` does not expose an `excludeFromContext` p
 ### Canonical Context Transcript
 
 The plugin does not rewrite OpenClaw's raw transcript. Instead, it keeps a plugin-owned canonical context transcript per `sessionId` and uses that canonical state for future model-context assembly.
+
+After runtime-churn normalization, the plugin also applies a narrow session-mode-aware slimming pass:
+
+- `direct-chat`: collapses repeated Telegram direct-chat metadata wrappers first
+- `background-subagent`: drops progress chatter and keeps only the newest child-completion residue
+- `acp-run`: drops progress chatter while preserving the final verdict and `reports/...` artifact path
+- `default`: conservatively falls back to the existing behavior
 
 Runtime churn slimming happens only after messages have already entered the transcript, during canonical-state sync. The current rules are intentionally narrow: compaction summaries, internal child-result completion injections, and Telegram direct-chat metadata wrappers. This plugin does not stop OpenClaw core from emitting those events, and it does not redefine OpenClaw's completion truth source.
 

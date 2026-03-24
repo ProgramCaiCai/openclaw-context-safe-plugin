@@ -12,11 +12,13 @@ import {
   samePruneConfig,
   type ContextSafePruneConfig,
   type ContextSafeRuntimeChurnConfig,
+  type ContextSafeSessionMode,
 } from "./config.js";
 import {
   normalizeRuntimeChurnMessages,
   type RuntimeChurnKind,
 } from "./runtime-churn-policy.js";
+import { normalizeReportAwareMessages } from "./report-aware-policy.js";
 import {
   applyCanonicalPrune,
   applyContextToolResultPolicy,
@@ -195,22 +197,31 @@ async function synchronizeCanonicalState(params: {
 }): Promise<{ state: CanonicalSessionState; changed: boolean }> {
   const loaded = await loadCanonicalSessionState(params.sessionId);
   const rawMessages = structuredClone(params.rawMessages);
+  const sessionMode = inferSessionMode(rawMessages);
+  const needsModeRebuild =
+    !!loaded.state?.sessionMode && loaded.state.sessionMode !== sessionMode;
 
-  if (loaded.needsRebuild || !loaded.state || loaded.state.sourceMessageCount > rawMessages.length) {
-    const normalized = normalizeRuntimeChurnMessages(rawMessages, params.runtimeChurnConfig);
+  if (
+    loaded.needsRebuild ||
+    !loaded.state ||
+    needsModeRebuild ||
+    loaded.state.sourceMessageCount > rawMessages.length
+  ) {
+    const normalized = normalizeCanonicalMessages(rawMessages, params.runtimeChurnConfig, sessionMode);
     logRuntimeChurnNormalization({
       logger: params.logger,
       sessionId: params.sessionId,
-      normalizedCount: normalized.normalizedCount,
-      kinds: normalized.kinds,
+      normalizedCount: normalized.runtimeChurn.normalizedCount,
+      kinds: normalized.runtimeChurn.kinds,
     });
     return {
       state: createCanonicalSessionState({
         sessionId: params.sessionId,
         sourceMessageCount: rawMessages.length,
+        sessionMode,
         configSnapshot: params.pruneConfig,
         messages: normalized.messages,
-        runtimeChurnMetadata: mergeRuntimeChurnMetadata(undefined, normalized),
+        runtimeChurnMetadata: mergeRuntimeChurnMetadata(undefined, normalized.runtimeChurn),
       }),
       changed: true,
     };
@@ -221,17 +232,18 @@ async function synchronizeCanonicalState(params: {
   let runtimeChurnMetadata = readRuntimeChurnMetadata(loaded.state);
 
   if (loaded.state.sourceMessageCount < rawMessages.length) {
-    const appended = normalizeRuntimeChurnMessages(
+    const appended = normalizeCanonicalMessages(
       rawMessages.slice(loaded.state.sourceMessageCount),
       params.runtimeChurnConfig,
+      sessionMode,
     );
     messages = [...messages, ...appended.messages];
-    runtimeChurnMetadata = mergeRuntimeChurnMetadata(runtimeChurnMetadata, appended);
+    runtimeChurnMetadata = mergeRuntimeChurnMetadata(runtimeChurnMetadata, appended.runtimeChurn);
     logRuntimeChurnNormalization({
       logger: params.logger,
       sessionId: params.sessionId,
-      normalizedCount: appended.normalizedCount,
-      kinds: appended.kinds,
+      normalizedCount: appended.runtimeChurn.normalizedCount,
+      kinds: appended.runtimeChurn.kinds,
     });
     changed = true;
   }
@@ -240,10 +252,15 @@ async function synchronizeCanonicalState(params: {
     changed = true;
   }
 
+  if (loaded.state.sessionMode !== sessionMode) {
+    changed = true;
+  }
+
   return {
     state: createCanonicalSessionState({
       sessionId: loaded.state.sessionId,
       sourceMessageCount: rawMessages.length,
+      sessionMode,
       configSnapshot: params.pruneConfig,
       messages,
       pruneMetadata: readPruneMetadata(loaded.state),
@@ -251,6 +268,152 @@ async function synchronizeCanonicalState(params: {
     }),
     changed,
   };
+}
+
+function normalizeCanonicalMessages(
+  messages: ContextSafeMessage[],
+  runtimeChurnConfig: ContextSafeRuntimeChurnConfig,
+  sessionMode: ContextSafeSessionMode,
+): {
+  messages: ContextSafeMessage[];
+  runtimeChurn: {
+    normalizedCount: number;
+    kinds: RuntimeChurnKind[];
+  };
+} {
+  const runtimeChurn = normalizeRuntimeChurnMessages(messages, runtimeChurnConfig);
+  const reportAware = normalizeReportAwareMessages(runtimeChurn.messages);
+  return {
+    messages: applySessionModeAwareSlimming(reportAware.messages, sessionMode),
+    runtimeChurn: {
+      normalizedCount: runtimeChurn.normalizedCount,
+      kinds: runtimeChurn.kinds,
+    },
+  };
+}
+
+function inferSessionMode(messages: ContextSafeMessage[]): ContextSafeSessionMode {
+  if (messages.some(isAcpRunSignalMessage)) {
+    return "acp-run";
+  }
+  if (messages.some(isBackgroundSubagentSignalMessage)) {
+    return "background-subagent";
+  }
+  if (messages.some(isDirectChatSignalMessage)) {
+    return "direct-chat";
+  }
+  return "default";
+}
+
+function applySessionModeAwareSlimming(
+  messages: ContextSafeMessage[],
+  sessionMode: ContextSafeSessionMode,
+): ContextSafeMessage[] {
+  switch (sessionMode) {
+    case "direct-chat":
+      return collapseDirectChatWrappers(messages);
+    case "background-subagent":
+      return collapseBackgroundSubagentResidue(messages);
+    case "acp-run":
+      return collapseAcpRunProgress(messages);
+    default:
+      return messages;
+  }
+}
+
+function collapseDirectChatWrappers(messages: ContextSafeMessage[]): ContextSafeMessage[] {
+  let keptDirectWrapper = false;
+  const kept: ContextSafeMessage[] = [];
+  for (const message of messages) {
+    if (!isDirectChatSignalMessage(message)) {
+      kept.push(message);
+      continue;
+    }
+    if (keptDirectWrapper) {
+      continue;
+    }
+    keptDirectWrapper = true;
+    kept.push(message);
+  }
+  return kept;
+}
+
+function collapseBackgroundSubagentResidue(messages: ContextSafeMessage[]): ContextSafeMessage[] {
+  const kept: ContextSafeMessage[] = [];
+  let latestCompletion: ContextSafeMessage | undefined;
+  for (const message of messages) {
+    if (isBackgroundProgressChatterMessage(message)) {
+      continue;
+    }
+    if (isBackgroundCompletionMessage(message)) {
+      latestCompletion = message;
+      continue;
+    }
+    kept.push(message);
+  }
+  if (latestCompletion) {
+    kept.push(latestCompletion);
+  }
+  return kept;
+}
+
+function collapseAcpRunProgress(messages: ContextSafeMessage[]): ContextSafeMessage[] {
+  return messages.filter((message) => !isBackgroundProgressChatterMessage(message));
+}
+
+function isDirectChatSignalMessage(message: ContextSafeMessage): boolean {
+  const text = messageText(message);
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes("telegram direct chat metadata") ||
+    normalized.includes("conversation info (untrusted metadata)") ||
+    normalized.includes('"chat_type":"direct"')
+  );
+}
+
+function isBackgroundSubagentSignalMessage(message: ContextSafeMessage): boolean {
+  const normalized = messageText(message).toLowerCase();
+  return (
+    normalized.includes("[internal task completion event]") ||
+    normalized.includes("child task completion (")
+  );
+}
+
+function isAcpRunSignalMessage(message: ContextSafeMessage): boolean {
+  const normalized = messageText(message).toLowerCase();
+  return (
+    normalized.includes("openai codex v") ||
+    (normalized.includes("workdir:") && normalized.includes("model:"))
+  );
+}
+
+function isBackgroundProgressChatterMessage(message: ContextSafeMessage): boolean {
+  const normalized = messageText(message).toLowerCase();
+  return (
+    normalized.includes("status: still working") ||
+    normalized.includes("debug progress") ||
+    normalized.includes("running verification")
+  );
+}
+
+function isBackgroundCompletionMessage(message: ContextSafeMessage): boolean {
+  return messageText(message).toLowerCase().includes("child task completion (");
+}
+
+function messageText(message: ContextSafeMessage): string {
+  if (typeof message.content === "string") {
+    return message.content;
+  }
+  if (!Array.isArray(message.content)) {
+    return "";
+  }
+  return message.content
+    .filter(
+      (block) =>
+        !!block && typeof block === "object" && (block as { type?: unknown }).type === "text",
+    )
+    .map((block) => String((block as { text?: unknown }).text ?? ""))
+    .join("\n");
 }
 
 async function persistCanonicalState(
@@ -289,6 +452,7 @@ function maybePruneCanonicalState(params: {
     state: createCanonicalSessionState({
       sessionId: params.state.sessionId,
       sourceMessageCount: params.state.sourceMessageCount,
+      sessionMode: params.state.sessionMode,
       configSnapshot: params.pruneConfig,
       messages: pruned.messages,
       pruneMetadata: createPruneMetadata({
