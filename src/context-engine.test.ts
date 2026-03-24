@@ -617,6 +617,62 @@ describe("createContextSafeContextEngine", () => {
     );
   });
 
+  it("persists report-aware summaries in canonical state after sync", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-report-aware-summary";
+
+    await engine.assemble({
+      sessionId,
+      messages: [
+        { role: "user", content: "capture the rollout result" },
+        reportAwareSummaryMessage(),
+      ],
+      tokenBudget: 512,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      messages: Array<{ content?: unknown }>;
+    };
+    expect(textOf(savedState.messages[1])).toContain("context-safe canonical policy v2");
+    expect(textOf(savedState.messages[1])).toContain("Verdict: pass");
+    expect(textOf(savedState.messages[1])).toContain(
+      "reports/context-safe-v2-canonical-policy-2026-03-24/index.md",
+    );
+    expect(textOf(savedState.messages[1])).toContain("updated src/report-aware-policy.ts");
+    expect(textOf(savedState.messages[1])).toContain("updated src/context-engine.ts");
+    expect(textOf(savedState.messages[1])).toContain("verified vitest + tsc");
+    expect(textOf(savedState.messages[1])).not.toContain("extra noisy bullet should be dropped");
+  });
+
+  it("summarizes newly appended report-aware messages during afterTurn sync", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-report-aware-append";
+    const baseMessages = [{ role: "assistant", content: [{ type: "text", text: "ready" }] }];
+    const finalMessages = [...baseMessages, reportAwareSummaryMessage()];
+
+    await engine.assemble({
+      sessionId,
+      messages: baseMessages,
+      tokenBudget: 512,
+    });
+    await engine.afterTurn({
+      sessionId,
+      sessionFile: "/tmp/report-aware-append.jsonl",
+      messages: finalMessages,
+      prePromptMessageCount: baseMessages.length,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      messages: Array<{ content?: unknown }>;
+    };
+    expect(textOf(savedState.messages[1])).toContain("context-safe canonical policy v2");
+    expect(textOf(savedState.messages[1])).toContain("Verdict: pass");
+    expect(textOf(savedState.messages[1])).toContain(
+      "reports/context-safe-v2-canonical-policy-2026-03-24/index.md",
+    );
+    expect(textOf(savedState.messages[1])).not.toContain("extra noisy bullet should be dropped");
+  });
+
   it("leaves non-matching messages unchanged when syncing canonical state", async () => {
     const engine = createContextSafeContextEngine();
     const sessionId = "session-runtime-churn-plain";
@@ -850,6 +906,26 @@ function childCompletionInjectionMessage() {
           "- added src/runtime-churn-policy.ts",
           "- wrote reports/context-safe-runtime-churn-slimming-2026-03-24/index.md",
           "<<<END_UNTRUSTED_CHILD_RESULT>>>",
+        ].join("\n"),
+      },
+    ],
+  };
+}
+
+function reportAwareSummaryMessage() {
+  return {
+    role: "assistant",
+    content: [
+      {
+        type: "text",
+        text: [
+          "Task: context-safe canonical policy v2",
+          "Verdict: pass",
+          "Report: reports/context-safe-v2-canonical-policy-2026-03-24/index.md",
+          "- updated src/report-aware-policy.ts",
+          "- updated src/context-engine.ts",
+          "- verified vitest + tsc",
+          "- extra noisy bullet should be dropped",
         ].join("\n"),
       },
     ],

@@ -50,7 +50,7 @@ export function normalizeRuntimeChurnMessage(
     return unchanged(message);
   }
 
-  const text = messageText(message);
+  const text = readMessageText(message);
   if (!text) {
     return unchanged(message);
   }
@@ -238,7 +238,7 @@ function replaceMessageText(
   };
 }
 
-function messageText(message: ContextSafeMessage): string {
+export function readMessageText(message: ContextSafeMessage): string {
   if (typeof message.content === "string") {
     return message.content;
   }
@@ -398,7 +398,7 @@ function stripMetadataWrappers(text: string): string {
   return kept.join(" ");
 }
 
-function compactWhitespace(value: string): string {
+export function compactWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 

@@ -17,6 +17,7 @@ import {
   normalizeRuntimeChurnMessages,
   type RuntimeChurnKind,
 } from "./runtime-churn-policy.js";
+import { normalizeReportAwareMessages } from "./report-aware-policy.js";
 import {
   applyCanonicalPrune,
   applyContextToolResultPolicy,
@@ -197,12 +198,12 @@ async function synchronizeCanonicalState(params: {
   const rawMessages = structuredClone(params.rawMessages);
 
   if (loaded.needsRebuild || !loaded.state || loaded.state.sourceMessageCount > rawMessages.length) {
-    const normalized = normalizeRuntimeChurnMessages(rawMessages, params.runtimeChurnConfig);
+    const normalized = normalizeCanonicalMessages(rawMessages, params.runtimeChurnConfig);
     logRuntimeChurnNormalization({
       logger: params.logger,
       sessionId: params.sessionId,
-      normalizedCount: normalized.normalizedCount,
-      kinds: normalized.kinds,
+      normalizedCount: normalized.runtimeChurn.normalizedCount,
+      kinds: normalized.runtimeChurn.kinds,
     });
     return {
       state: createCanonicalSessionState({
@@ -210,7 +211,7 @@ async function synchronizeCanonicalState(params: {
         sourceMessageCount: rawMessages.length,
         configSnapshot: params.pruneConfig,
         messages: normalized.messages,
-        runtimeChurnMetadata: mergeRuntimeChurnMetadata(undefined, normalized),
+        runtimeChurnMetadata: mergeRuntimeChurnMetadata(undefined, normalized.runtimeChurn),
       }),
       changed: true,
     };
@@ -221,17 +222,17 @@ async function synchronizeCanonicalState(params: {
   let runtimeChurnMetadata = readRuntimeChurnMetadata(loaded.state);
 
   if (loaded.state.sourceMessageCount < rawMessages.length) {
-    const appended = normalizeRuntimeChurnMessages(
+    const appended = normalizeCanonicalMessages(
       rawMessages.slice(loaded.state.sourceMessageCount),
       params.runtimeChurnConfig,
     );
     messages = [...messages, ...appended.messages];
-    runtimeChurnMetadata = mergeRuntimeChurnMetadata(runtimeChurnMetadata, appended);
+    runtimeChurnMetadata = mergeRuntimeChurnMetadata(runtimeChurnMetadata, appended.runtimeChurn);
     logRuntimeChurnNormalization({
       logger: params.logger,
       sessionId: params.sessionId,
-      normalizedCount: appended.normalizedCount,
-      kinds: appended.kinds,
+      normalizedCount: appended.runtimeChurn.normalizedCount,
+      kinds: appended.runtimeChurn.kinds,
     });
     changed = true;
   }
@@ -250,6 +251,27 @@ async function synchronizeCanonicalState(params: {
       runtimeChurnMetadata,
     }),
     changed,
+  };
+}
+
+function normalizeCanonicalMessages(
+  messages: ContextSafeMessage[],
+  runtimeChurnConfig: ContextSafeRuntimeChurnConfig,
+): {
+  messages: ContextSafeMessage[];
+  runtimeChurn: {
+    normalizedCount: number;
+    kinds: RuntimeChurnKind[];
+  };
+} {
+  const runtimeChurn = normalizeRuntimeChurnMessages(messages, runtimeChurnConfig);
+  const reportAware = normalizeReportAwareMessages(runtimeChurn.messages);
+  return {
+    messages: reportAware.messages,
+    runtimeChurn: {
+      normalizedCount: runtimeChurn.normalizedCount,
+      kinds: runtimeChurn.kinds,
+    },
   };
 }
 
