@@ -200,6 +200,7 @@ python3 -m py_compile scripts/install.py
 - `src/hooks.ts`：官方 hook 入口
 - `src/tool-result-persist.ts`：artifact、preview、details 压缩
 - `src/context-engine.ts`：context engine
+- `src/runtime-churn-policy.ts`：runtime churn 折叠规则
 - `src/tool-result-policy.ts`：assemble 阶段的 tool result 裁剪策略
 - `scripts/install.py`：官方命令封装脚本
 
@@ -401,5 +402,6 @@ Project layout:
 - `src/hooks.ts`: official hook entrypoints
 - `src/tool-result-persist.ts`: artifact writing, previews, and details compaction
 - `src/context-engine.ts`: context engine
+- `src/runtime-churn-policy.ts`: runtime churn normalization rules
 - `src/tool-result-policy.ts`: assemble-time tool-result policy
 - `scripts/install.py`: wrapper around official install commands

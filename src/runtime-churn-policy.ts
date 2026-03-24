@@ -219,11 +219,11 @@ function replaceMessageText(
   const { details: _details, ...rest } = message;
   const normalizedBlock = { type: "text", text };
   const content =
-    typeof message.content === "string" || message.content === undefined
+    typeof message.content === "string" || message.content === undefined || !Array.isArray(message.content)
       ? text
       : [
           ...message.content.filter(
-            (block) =>
+            (block: unknown) =>
               !!block && typeof block === "object" && (block as { type?: unknown }).type !== "text",
           ),
           normalizedBlock,
