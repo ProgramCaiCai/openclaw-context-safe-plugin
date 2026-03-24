@@ -47,6 +47,12 @@ export type ContextSafeRetentionTiersConfig = {
   foldFirst: string[];
 };
 
+export type ContextSafeSessionMode =
+  | "direct-chat"
+  | "background-subagent"
+  | "acp-run"
+  | "default";
+
 export type ContextSafeEngineConfig = {
   prune: ContextSafePruneConfig;
   runtimeChurn: ContextSafeRuntimeChurnConfig;

@@ -103,6 +103,7 @@ export function createCanonicalSessionState(params: {
     version: CANONICAL_SESSION_STATE_VERSION,
     sessionId: params.sessionId,
     sourceMessageCount: params.sourceMessageCount,
+    ...(params.sessionMode ? { sessionMode: params.sessionMode } : {}),
     configSnapshot: params.configSnapshot,
     messages,
     updatedAt: new Date().toISOString(),
@@ -208,6 +209,16 @@ function isOptionalRuntimeChurnKinds(value: unknown): value is RuntimeChurnKind[
           entry === "childCompletionInjection" ||
           entry === "telegramDirectChatMetadata",
       ))
+  );
+}
+
+function isOptionalSessionMode(value: unknown): value is ContextSafeSessionMode | undefined {
+  return (
+    value === undefined ||
+    value === "direct-chat" ||
+    value === "background-subagent" ||
+    value === "acp-run" ||
+    value === "default"
   );
 }
 

@@ -673,6 +673,132 @@ describe("createContextSafeContextEngine", () => {
     expect(textOf(savedState.messages[1])).not.toContain("extra noisy bullet should be dropped");
   });
 
+  it("slims direct-chat wrapper history more than a modest background-subagent transcript", async () => {
+    const engine = createContextSafeContextEngine();
+    const directSessionId = "session-mode-direct-slim";
+    const backgroundSessionId = "session-mode-background-modest";
+
+    await engine.assemble({
+      sessionId: directSessionId,
+      messages: [
+        telegramDirectChatMetadataMessage(),
+        telegramDirectChatMetadataMessage(),
+        telegramDirectChatMetadataMessage(),
+      ],
+      tokenBudget: 512,
+    });
+    await engine.assemble({
+      sessionId: backgroundSessionId,
+      messages: [
+        backgroundProgressChatterMessage("status: still working"),
+        backgroundCompletionResidueMessage(
+          "background-modest",
+          "reports/context-safe-background-modest-2026-03-24/index.md",
+        ),
+      ],
+      tokenBudget: 512,
+    });
+
+    const directState = JSON.parse(fs.readFileSync(canonicalStatePath(directSessionId), "utf8")) as {
+      sessionMode?: string;
+      messages: Array<{ content?: unknown }>;
+    };
+    const backgroundState = JSON.parse(
+      fs.readFileSync(canonicalStatePath(backgroundSessionId), "utf8"),
+    ) as {
+      sessionMode?: string;
+      messages: Array<{ content?: unknown }>;
+    };
+
+    expect(directState.sessionMode).toBe("direct-chat");
+    expect(backgroundState.sessionMode).toBe("background-subagent");
+    expect(canonicalCharCount(directState.messages)).toBeLessThan(
+      canonicalCharCount(backgroundState.messages),
+    );
+  });
+
+  it("collapses background-subagent completion residue more aggressively than direct-chat history", async () => {
+    const engine = createContextSafeContextEngine();
+    const directSessionId = "session-mode-direct-noisy";
+    const backgroundSessionId = "session-mode-background-strong";
+
+    await engine.assemble({
+      sessionId: directSessionId,
+      messages: [
+        telegramDirectChatMetadataMessage(),
+        { role: "user", content: "Please continue from the last result." },
+      ],
+      tokenBudget: 512,
+    });
+    await engine.assemble({
+      sessionId: backgroundSessionId,
+      messages: [
+        backgroundProgressChatterMessage("status: still working"),
+        backgroundProgressChatterMessage("debug progress"),
+        backgroundProgressChatterMessage("running verification"),
+        backgroundCompletionResidueMessage(
+          "background-worker-1",
+          "reports/context-safe-background-worker-1-2026-03-24/index.md",
+        ),
+        backgroundCompletionResidueMessage(
+          "background-worker-2",
+          "reports/context-safe-background-worker-2-2026-03-24/index.md",
+        ),
+        backgroundCompletionResidueMessage(
+          "background-worker-final",
+          "reports/context-safe-background-worker-final-2026-03-24/index.md",
+        ),
+      ],
+      tokenBudget: 512,
+    });
+
+    const directState = JSON.parse(fs.readFileSync(canonicalStatePath(directSessionId), "utf8")) as {
+      sessionMode?: string;
+      messages: Array<{ content?: unknown }>;
+    };
+    const backgroundState = JSON.parse(
+      fs.readFileSync(canonicalStatePath(backgroundSessionId), "utf8"),
+    ) as {
+      sessionMode?: string;
+      messages: Array<{ content?: unknown }>;
+    };
+
+    expect(directState.sessionMode).toBe("direct-chat");
+    expect(backgroundState.sessionMode).toBe("background-subagent");
+    expect(backgroundState.messages.length).toBeLessThan(directState.messages.length);
+    expect(canonicalCharCount(backgroundState.messages)).toBeLessThan(
+      canonicalCharCount(directState.messages),
+    );
+  });
+
+  it("collapses acp-run progress chatter while preserving the final verdict and report path", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-mode-acp-run";
+
+    await engine.assemble({
+      sessionId,
+      messages: [
+        acpRunHeaderMessage(),
+        acpRunProgressChatterMessage("status: still working"),
+        acpRunProgressChatterMessage("debug progress"),
+        reportAwareSummaryMessage(),
+      ],
+      tokenBudget: 512,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      sessionMode?: string;
+      messages: Array<{ content?: unknown }>;
+    };
+    const transcript = savedState.messages.map((message) => textOf(message)).join("\\n");
+
+    expect(savedState.sessionMode).toBe("acp-run");
+    expect(transcript).toContain("Verdict: pass");
+    expect(transcript).toContain("reports/context-safe-v2-canonical-policy-2026-03-24/index.md");
+    expect(transcript).not.toContain("status: still working");
+    expect(transcript).not.toContain("debug progress");
+  });
+
   it("leaves non-matching messages unchanged when syncing canonical state", async () => {
     const engine = createContextSafeContextEngine();
     const sessionId = "session-runtime-churn-plain";
@@ -932,6 +1058,54 @@ function reportAwareSummaryMessage() {
   };
 }
 
+function backgroundProgressChatterMessage(text: string) {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+  };
+}
+
+function backgroundCompletionResidueMessage(label: string, reportPath: string) {
+  return {
+    role: "assistant",
+    content: [
+      {
+        type: "text",
+        text: [
+          `[runtime-churn normalized] Child task completion (success): ${label}`,
+          `Report: ${reportPath}`,
+          `Key points: finalized ${label}; verified vitest; wrote ${reportPath}`,
+        ].join("\\n"),
+      },
+    ],
+  };
+}
+
+function acpRunHeaderMessage() {
+  return {
+    role: "assistant",
+    content: [
+      {
+        type: "text",
+        text: [
+          "OpenAI Codex v0.116.0 (research preview)",
+          "workdir: /Users/programcaicai/clawd/projects/openclaw-context-safe-plugin",
+          "model: gpt-5.4",
+          "approval: never",
+          "sandbox: danger-full-access",
+        ].join("\\n"),
+      },
+    ],
+  };
+}
+
+function acpRunProgressChatterMessage(text: string) {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+  };
+}
+
 function telegramDirectChatMetadataMessage() {
   return {
     role: "user",
@@ -980,6 +1154,10 @@ function countThinkingBlocks(messages: Array<{ content?: unknown }>): number {
 
 function toolResultTexts(messages: Array<{ role?: string; content?: unknown }>): string[] {
   return messages.filter((message) => message.role === "toolResult").map((message) => textOf(message));
+}
+
+function canonicalCharCount(messages: Array<{ content?: unknown }>): number {
+  return messages.map((message) => textOf(message)).join("\n").length;
 }
 
 function toolResultDetails(messages: Array<{ role?: string; details?: unknown }>): unknown[] {

@@ -48,6 +48,7 @@ describe("canonical session state", () => {
         keepRecentToolResults: 2,
         placeholder: "[pruned]",
       },
+      sessionMode: "background-subagent",
       messages: [
         { role: "user", content: "hello" },
         { role: "assistant", content: [{ type: "text", text: "world" }] },
@@ -99,6 +100,28 @@ describe("canonical session state", () => {
       needsRebuild: false,
       state: legacyState as CanonicalSessionState,
     });
+  });
+
+  it("keeps loading legacy states that do not persist session mode metadata", async () => {
+    const statePath = buildCanonicalSessionStatePath("session-legacy-no-mode");
+    const legacyState = {
+      version: 1,
+      sessionId: "session-legacy-no-mode",
+      sourceMessageCount: 1,
+      configSnapshot: {
+        thresholdChars: 50_000,
+        keepRecentToolResults: 2,
+        placeholder: "[pruned]",
+      },
+      messages: [{ role: "assistant", content: "hello" }],
+    };
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify(legacyState, null, 2), "utf8");
+
+    const loaded = await loadCanonicalSessionState("session-legacy-no-mode");
+
+    expect(loaded.needsRebuild).toBe(false);
+    expect(loaded.state?.sessionMode).toBeUndefined();
   });
 
   it("falls back to rebuild when the state file contains invalid json", async () => {

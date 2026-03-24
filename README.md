@@ -259,6 +259,13 @@ Important detail: official `v2026.3.8` does not expose an `excludeFromContext` p
 
 The plugin does not rewrite OpenClaw's raw transcript. Instead, it keeps a plugin-owned canonical context transcript per `sessionId` and uses that canonical state for future model-context assembly.
 
+After runtime-churn normalization, the plugin also applies a narrow session-mode-aware slimming pass:
+
+- `direct-chat`: collapses repeated Telegram direct-chat metadata wrappers first
+- `background-subagent`: drops progress chatter and keeps only the newest child-completion residue
+- `acp-run`: drops progress chatter while preserving the final verdict and `reports/...` artifact path
+- `default`: conservatively falls back to the existing behavior
+
 Runtime churn slimming happens only after messages have already entered the transcript, during canonical-state sync. The current rules are intentionally narrow: compaction summaries, internal child-result completion injections, and Telegram direct-chat metadata wrappers. This plugin does not stop OpenClaw core from emitting those events, and it does not redefine OpenClaw's completion truth source.
 
 When the estimated `pruneGain >= thresholdChars`, the plugin prunes and persists the canonical transcript. Future requests then start from the pruned baseline instead of recalculating against the same historical noise every turn.
