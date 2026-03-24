@@ -50,6 +50,57 @@
             "default": true
           }
         }
+      },
+      "retentionTiers": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "critical": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "default": [
+              "please",
+              "keep",
+              "focus",
+              "continue",
+              "recommendation",
+              "verdict:",
+              "outcome:",
+              "report:"
+            ]
+          },
+          "compressible": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "default": [
+              "running verification",
+              "status: still working",
+              "debug progress"
+            ]
+          },
+          "foldFirst": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "default": [
+              "conversation info (untrusted metadata)",
+              "sender (untrusted metadata)",
+              "telegram direct chat metadata"
+            ]
+          }
+        }
       }
     }
   }

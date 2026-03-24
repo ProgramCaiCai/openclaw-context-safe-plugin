@@ -163,6 +163,29 @@ canonical session state 也会保存在同一 artifact 根目录下：
     "collapseCompactionSummaries": true,
     "collapseChildCompletionInjections": true,
     "collapseDirectChatMetadata": true
+  },
+  "retentionTiers": {
+    "enabled": true,
+    "critical": [
+      "please",
+      "keep",
+      "focus",
+      "continue",
+      "recommendation",
+      "verdict:",
+      "outcome:",
+      "report:"
+    ],
+    "compressible": [
+      "running verification",
+      "status: still working",
+      "debug progress"
+    ],
+    "foldFirst": [
+      "conversation info (untrusted metadata)",
+      "sender (untrusted metadata)",
+      "telegram direct chat metadata"
+    ]
   }
 }
 ```
@@ -177,7 +200,14 @@ openclaw config set plugins.entries.context-safe.config.runtimeChurn.enabled tru
 openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseCompactionSummaries true
 openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseChildCompletionInjections true
 openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseDirectChatMetadata true
+openclaw config set plugins.entries.context-safe.config.retentionTiers.enabled true
 ```
+
+`retentionTiers` 提供 canonical transcript 的窄规则分层提示：
+
+- `critical`：优先保留最近尾部的非包装型用户意图，以及带 `verdict:` / `outcome:` 和 `reports/...` 路径的结论摘要
+- `compressible`：压缩长且重复的 tool-result chatter
+- `foldFirst`：优先折叠旧的 metadata-wrapper 文本
 
 canonical session state 会额外记录两组轻量观测字段：
 
