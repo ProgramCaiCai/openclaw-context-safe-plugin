@@ -4,13 +4,19 @@ import {
   loadCanonicalSessionState,
   saveCanonicalSessionState,
   type CanonicalSessionPruneMetadata,
+  type CanonicalSessionRuntimeChurnMetadata,
   type CanonicalSessionState,
 } from "./canonical-session-state.js";
 import {
   normalizeContextSafeEngineConfig,
   samePruneConfig,
   type ContextSafePruneConfig,
+  type ContextSafeRuntimeChurnConfig,
 } from "./config.js";
+import {
+  normalizeRuntimeChurnMessages,
+  type RuntimeChurnKind,
+} from "./runtime-churn-policy.js";
 import {
   applyCanonicalPrune,
   applyContextToolResultPolicy,
@@ -24,6 +30,7 @@ type ContextSafeLogger = {
 
 export function createContextSafeContextEngine(input?: {
   prune?: Partial<ContextSafePruneConfig>;
+  runtimeChurn?: Partial<ContextSafeRuntimeChurnConfig>;
   logger?: ContextSafeLogger;
 }) {
   const config = normalizeContextSafeEngineConfig(input);
@@ -48,6 +55,8 @@ export function createContextSafeContextEngine(input?: {
         sessionId: params.sessionId,
         rawMessages: params.messages,
         pruneConfig: config.prune,
+        runtimeChurnConfig: config.runtimeChurn,
+        logger,
       });
       const canonical = maybePruneCanonicalState({
         state: synced.state,
@@ -69,6 +78,8 @@ export function createContextSafeContextEngine(input?: {
         sessionId: params.sessionId,
         rawMessages: params.messages,
         pruneConfig: config.prune,
+        runtimeChurnConfig: config.runtimeChurn,
+        logger,
       });
       const canonical = maybePruneCanonicalState({
         state: synced.state,
@@ -110,6 +121,8 @@ export function createContextSafeContextEngine(input?: {
         sessionId: params.sessionId,
         rawMessages,
         pruneConfig: config.prune,
+        runtimeChurnConfig: config.runtimeChurn,
+        logger,
       });
       const tokensBefore = estimateAssembledTokens(synced.state.messages, params.tokenBudget);
       let canonicalState = synced.state;
@@ -150,6 +163,7 @@ export function createContextSafeContextEngine(input?: {
           pruneGain: pruned.pruneGain,
           thresholdChars: params.force ? 1 : config.prune.thresholdChars,
         }),
+        runtimeChurnMetadata: readRuntimeChurnMetadata(canonicalState),
       });
       changed = true;
 
@@ -176,17 +190,27 @@ async function synchronizeCanonicalState(params: {
   sessionId: string;
   rawMessages: ContextSafeMessage[];
   pruneConfig: ContextSafePruneConfig;
+  runtimeChurnConfig: ContextSafeRuntimeChurnConfig;
+  logger?: ContextSafeLogger;
 }): Promise<{ state: CanonicalSessionState; changed: boolean }> {
   const loaded = await loadCanonicalSessionState(params.sessionId);
   const rawMessages = structuredClone(params.rawMessages);
 
   if (loaded.needsRebuild || !loaded.state || loaded.state.sourceMessageCount > rawMessages.length) {
+    const normalized = normalizeRuntimeChurnMessages(rawMessages, params.runtimeChurnConfig);
+    logRuntimeChurnNormalization({
+      logger: params.logger,
+      sessionId: params.sessionId,
+      normalizedCount: normalized.normalizedCount,
+      kinds: normalized.kinds,
+    });
     return {
       state: createCanonicalSessionState({
         sessionId: params.sessionId,
         sourceMessageCount: rawMessages.length,
         configSnapshot: params.pruneConfig,
-        messages: rawMessages,
+        messages: normalized.messages,
+        runtimeChurnMetadata: mergeRuntimeChurnMetadata(undefined, normalized),
       }),
       changed: true,
     };
@@ -194,9 +218,21 @@ async function synchronizeCanonicalState(params: {
 
   let changed = false;
   let messages = loaded.state.messages;
+  let runtimeChurnMetadata = readRuntimeChurnMetadata(loaded.state);
 
   if (loaded.state.sourceMessageCount < rawMessages.length) {
-    messages = [...messages, ...rawMessages.slice(loaded.state.sourceMessageCount)];
+    const appended = normalizeRuntimeChurnMessages(
+      rawMessages.slice(loaded.state.sourceMessageCount),
+      params.runtimeChurnConfig,
+    );
+    messages = [...messages, ...appended.messages];
+    runtimeChurnMetadata = mergeRuntimeChurnMetadata(runtimeChurnMetadata, appended);
+    logRuntimeChurnNormalization({
+      logger: params.logger,
+      sessionId: params.sessionId,
+      normalizedCount: appended.normalizedCount,
+      kinds: appended.kinds,
+    });
     changed = true;
   }
 
@@ -211,6 +247,7 @@ async function synchronizeCanonicalState(params: {
       configSnapshot: params.pruneConfig,
       messages,
       pruneMetadata: readPruneMetadata(loaded.state),
+      runtimeChurnMetadata,
     }),
     changed,
   };
@@ -259,6 +296,7 @@ function maybePruneCanonicalState(params: {
         pruneGain: pruned.pruneGain,
         thresholdChars: params.pruneConfig.thresholdChars,
       }),
+      runtimeChurnMetadata: readRuntimeChurnMetadata(params.state),
     }),
     changed: true,
   };
@@ -297,6 +335,41 @@ function readPruneMetadata(state: CanonicalSessionState): CanonicalSessionPruneM
   };
 }
 
+function readRuntimeChurnMetadata(
+  state: CanonicalSessionState,
+): CanonicalSessionRuntimeChurnMetadata | undefined {
+  if (
+    typeof state.normalizedRuntimeChurnCount !== "number" ||
+    !Array.isArray(state.lastRuntimeChurnKinds)
+  ) {
+    return undefined;
+  }
+
+  return {
+    normalizedRuntimeChurnCount: state.normalizedRuntimeChurnCount,
+    lastRuntimeChurnKinds: [...state.lastRuntimeChurnKinds],
+  };
+}
+
+function mergeRuntimeChurnMetadata(
+  existing: CanonicalSessionRuntimeChurnMetadata | undefined,
+  normalized: { normalizedCount: number; kinds: RuntimeChurnKind[] },
+): CanonicalSessionRuntimeChurnMetadata {
+  if (!existing) {
+    return {
+      normalizedRuntimeChurnCount: normalized.normalizedCount,
+      lastRuntimeChurnKinds: [...normalized.kinds],
+    };
+  }
+
+  return {
+    normalizedRuntimeChurnCount:
+      existing.normalizedRuntimeChurnCount + normalized.normalizedCount,
+    lastRuntimeChurnKinds:
+      normalized.kinds.length > 0 ? [...normalized.kinds] : [...existing.lastRuntimeChurnKinds],
+  };
+}
+
 function logPruneTriggered(params: {
   logger?: ContextSafeLogger;
   source: "afterTurn" | "assemble" | "compact";
@@ -306,6 +379,20 @@ function logPruneTriggered(params: {
 }) {
   params.logger?.info?.(
     `context-safe prune triggered source=${params.source} sessionId=${params.sessionId} pruneGain=${params.pruneGain} thresholdChars=${params.thresholdChars}`,
+  );
+}
+
+function logRuntimeChurnNormalization(params: {
+  logger?: ContextSafeLogger;
+  sessionId: string;
+  normalizedCount: number;
+  kinds: RuntimeChurnKind[];
+}) {
+  if (params.normalizedCount <= 0) {
+    return;
+  }
+  params.logger?.info?.(
+    `context-safe runtime-churn normalized=${params.normalizedCount} sessionId=${params.sessionId} kinds=${params.kinds.join(",")}`,
   );
 }
 

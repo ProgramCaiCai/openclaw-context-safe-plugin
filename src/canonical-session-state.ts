@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveContextSafeArtifactBaseDir } from "./artifact-dir.js";
 import { type ContextSafePruneConfig } from "./config.js";
+import { type RuntimeChurnKind } from "./runtime-churn-policy.js";
 import { type ContextSafeMessage } from "./tool-result-policy.js";
 
 const CANONICAL_SESSION_STATE_VERSION = 1;
@@ -13,6 +14,11 @@ export type CanonicalSessionPruneMetadata = {
   lastPruneSource: CanonicalSessionPruneSource;
   lastPruneGain: number;
   lastThresholdChars: number;
+};
+
+export type CanonicalSessionRuntimeChurnMetadata = {
+  normalizedRuntimeChurnCount: number;
+  lastRuntimeChurnKinds: RuntimeChurnKind[];
 };
 
 export type CanonicalSessionState = {
@@ -27,7 +33,8 @@ export type CanonicalSessionState = {
   thresholdChars: number;
   keepRecentToolResults: number;
   placeholder: string;
-} & Partial<CanonicalSessionPruneMetadata>;
+} & Partial<CanonicalSessionPruneMetadata> &
+  Partial<CanonicalSessionRuntimeChurnMetadata>;
 
 export async function loadCanonicalSessionState(
   sessionId: string,
@@ -86,8 +93,12 @@ export function createCanonicalSessionState(params: {
   configSnapshot: ContextSafePruneConfig;
   messages: ContextSafeMessage[];
   pruneMetadata?: CanonicalSessionPruneMetadata;
+  runtimeChurnMetadata?: CanonicalSessionRuntimeChurnMetadata;
 }): CanonicalSessionState {
   const messages = structuredClone(params.messages);
+  const runtimeChurnMetadata = params.runtimeChurnMetadata
+    ? normalizeRuntimeChurnMetadata(params.runtimeChurnMetadata)
+    : undefined;
   return {
     version: CANONICAL_SESSION_STATE_VERSION,
     sessionId: params.sessionId,
@@ -101,6 +112,7 @@ export function createCanonicalSessionState(params: {
     keepRecentToolResults: params.configSnapshot.keepRecentToolResults,
     placeholder: params.configSnapshot.placeholder,
     ...(params.pruneMetadata ? structuredClone(params.pruneMetadata) : {}),
+    ...(runtimeChurnMetadata ? runtimeChurnMetadata : {}),
   };
 }
 
@@ -130,7 +142,9 @@ function isCanonicalSessionState(value: unknown): value is CanonicalSessionState
     isOptionalIsoTimestamp(value.lastPrunedAt) &&
     isOptionalPruneSource(value.lastPruneSource) &&
     isOptionalNonNegativeInteger(value.lastPruneGain) &&
-    isOptionalPositiveInteger(value.lastThresholdChars)
+    isOptionalPositiveInteger(value.lastThresholdChars) &&
+    isOptionalNonNegativeInteger(value.normalizedRuntimeChurnCount) &&
+    isOptionalRuntimeChurnKinds(value.lastRuntimeChurnKinds)
   );
 }
 
@@ -150,6 +164,15 @@ function isPruneConfig(value: unknown): value is ContextSafePruneConfig {
     typeof value.placeholder === "string" &&
     value.placeholder.length > 0
   );
+}
+
+function normalizeRuntimeChurnMetadata(
+  value: CanonicalSessionRuntimeChurnMetadata,
+): CanonicalSessionRuntimeChurnMetadata {
+  return {
+    normalizedRuntimeChurnCount: value.normalizedRuntimeChurnCount,
+    lastRuntimeChurnKinds: [...value.lastRuntimeChurnKinds],
+  };
 }
 
 function isOptionalIsoTimestamp(value: unknown): boolean {
@@ -173,6 +196,19 @@ function isOptionalNonNegativeInteger(value: unknown): boolean {
 
 function isOptionalPruneSource(value: unknown): value is CanonicalSessionPruneSource | undefined {
   return value === undefined || value === "afterTurn" || value === "assemble" || value === "compact";
+}
+
+function isOptionalRuntimeChurnKinds(value: unknown): value is RuntimeChurnKind[] | undefined {
+  return (
+    value === undefined ||
+    (Array.isArray(value) &&
+      value.every(
+        (entry) =>
+          entry === "compactionSummary" ||
+          entry === "childCompletionInjection" ||
+          entry === "telegramDirectChatMetadata",
+      ))
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

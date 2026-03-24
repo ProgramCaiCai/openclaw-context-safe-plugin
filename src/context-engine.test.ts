@@ -497,6 +497,110 @@ describe("createContextSafeContextEngine", () => {
     expect(info).toHaveBeenCalledWith(expect.stringContaining("context-safe prune triggered"));
     expect(info).toHaveBeenCalledWith(expect.stringContaining("source=afterTurn"));
   });
+
+  it("persists compact child-completion summaries instead of raw injected blobs", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-runtime-churn-child";
+    const rawMessages = [
+      { role: "user", content: "check the child result" },
+      childCompletionInjectionMessage(),
+    ];
+
+    await engine.assemble({
+      sessionId,
+      messages: rawMessages,
+      tokenBudget: 512,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      messages: Array<{ content?: unknown }>;
+    };
+    expect(textOf(savedState.messages[1])).toContain(
+      "Child task completion (success): runtime-churn-slimming",
+    );
+    expect(textOf(savedState.messages[1])).toContain(
+      "reports/context-safe-runtime-churn-slimming-2026-03-24/index.md",
+    );
+    expect(textOf(savedState.messages[1])).not.toContain("BEGIN_UNTRUSTED_CHILD_RESULT");
+
+    const secondResult = await engine.assemble({
+      sessionId,
+      messages: [
+        { role: "user", content: "check the child result" },
+        {
+          ...childCompletionInjectionMessage(),
+          content: [
+            {
+              type: "text",
+              text: [
+                "[Internal task completion event]",
+                "Task label: runtime-churn-slimming",
+                "<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>",
+                "RAW UPSTREAM HISTORY SHOULD NOT REPLACE THE CANONICAL SUMMARY",
+                "<<<END_UNTRUSTED_CHILD_RESULT>>>",
+              ].join("\n"),
+            },
+          ],
+        },
+      ],
+      tokenBudget: 512,
+    });
+
+    expect(textOf(secondResult.messages[1] as { content?: unknown })).toContain(
+      "Child task completion (success): runtime-churn-slimming",
+    );
+    expect(textOf(secondResult.messages[1] as { content?: unknown })).not.toContain(
+      "RAW UPSTREAM HISTORY SHOULD NOT REPLACE THE CANONICAL SUMMARY",
+    );
+  });
+
+  it("normalizes newly appended Telegram direct-chat metadata during afterTurn sync", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-runtime-churn-telegram";
+    const baseMessages = [{ role: "assistant", content: [{ type: "text", text: "ready" }] }];
+    const finalMessages = [...baseMessages, telegramDirectChatMetadataMessage()];
+
+    await engine.assemble({
+      sessionId,
+      messages: baseMessages,
+      tokenBudget: 512,
+    });
+    await engine.afterTurn({
+      sessionId,
+      sessionFile: "/tmp/runtime-churn-telegram.jsonl",
+      messages: finalMessages,
+      prePromptMessageCount: baseMessages.length,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      messages: Array<{ content?: unknown }>;
+    };
+    expect(textOf(savedState.messages[1])).toContain("Telegram direct chat metadata");
+    expect(textOf(savedState.messages[1])).toContain("Please continue from the last result.");
+    expect(textOf(savedState.messages[1])).not.toContain(
+      "Conversation info (untrusted metadata)",
+    );
+  });
+
+  it("leaves non-matching messages unchanged when syncing canonical state", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-runtime-churn-plain";
+    const rawMessages = [
+      { role: "user", content: "plain user prompt" },
+      { role: "assistant", content: [{ type: "text", text: "plain assistant reply" }] },
+    ];
+
+    await engine.assemble({
+      sessionId,
+      messages: rawMessages,
+      tokenBudget: 512,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      messages: Array<{ role?: string; content?: unknown }>;
+    };
+    expect(savedState.messages).toEqual(rawMessages);
+  });
 });
 
 function textOf(message: unknown): string {
@@ -694,6 +798,45 @@ function appendNewCanonicalGrowth(
       content: [{ type: "text", text: "latest tool result 2" }],
     },
   ];
+}
+
+function childCompletionInjectionMessage() {
+  return {
+    role: "assistant",
+    content: [
+      {
+        type: "text",
+        text: [
+          "[Internal task completion event]",
+          "Task label: runtime-churn-slimming",
+          "<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>",
+          "Implemented runtime churn slimming.",
+          "- updated src/config.ts",
+          "- added src/runtime-churn-policy.ts",
+          "- wrote reports/context-safe-runtime-churn-slimming-2026-03-24/index.md",
+          "<<<END_UNTRUSTED_CHILD_RESULT>>>",
+        ].join("\n"),
+      },
+    ],
+  };
+}
+
+function telegramDirectChatMetadataMessage() {
+  return {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: [
+          "Conversation info (untrusted metadata)",
+          '{"channel":"telegram","chat_type":"direct","chat_id":"440811495","thread_id":"dm"}',
+          "Sender (untrusted metadata)",
+          '{"id":"440811495","display_name":"编程菜菜","username":"programcaicai"}',
+          "Please continue from the last result.",
+        ].join("\n"),
+      },
+    ],
+  };
 }
 
 function canonicalStatePath(sessionId: string): string {
