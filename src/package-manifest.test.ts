@@ -13,7 +13,7 @@ describe("package manifest", () => {
     expect(packageJson.files).toContain("scripts/install.py");
   });
 
-  it("declares the prune config schema in openclaw.plugin.json", () => {
+  it("declares the prune and runtime-churn config schema in openclaw.plugin.json", () => {
     const manifest = JSON.parse(
       fs.readFileSync(path.join(import.meta.dirname, "..", "openclaw.plugin.json"), "utf8"),
     ) as {
@@ -21,6 +21,10 @@ describe("package manifest", () => {
         additionalProperties?: boolean;
         properties?: {
           prune?: {
+            additionalProperties?: boolean;
+            properties?: Record<string, unknown>;
+          };
+          runtimeChurn?: {
             additionalProperties?: boolean;
             properties?: Record<string, unknown>;
           };
@@ -46,6 +50,28 @@ describe("package manifest", () => {
           type: "string",
           minLength: 1,
           default: "[pruned]",
+        },
+      },
+      type: "object",
+    });
+    expect(manifest.configSchema?.properties?.runtimeChurn).toEqual({
+      additionalProperties: false,
+      properties: {
+        enabled: {
+          type: "boolean",
+          default: true,
+        },
+        collapseCompactionSummaries: {
+          type: "boolean",
+          default: true,
+        },
+        collapseChildCompletionInjections: {
+          type: "boolean",
+          default: true,
+        },
+        collapseDirectChatMetadata: {
+          type: "boolean",
+          default: true,
         },
       },
       type: "object",

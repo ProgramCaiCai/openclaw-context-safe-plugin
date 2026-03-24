@@ -154,6 +154,12 @@ canonical session state 也会保存在同一 artifact 根目录下：
     "thresholdChars": 100000,
     "keepRecentToolResults": 5,
     "placeholder": "[pruned]"
+  },
+  "runtimeChurn": {
+    "enabled": true,
+    "collapseCompactionSummaries": true,
+    "collapseChildCompletionInjections": true,
+    "collapseDirectChatMetadata": true
   }
 }
 ```
@@ -164,6 +170,10 @@ OpenClaw 配置示例：
 openclaw config set plugins.entries.context-safe.config.prune.thresholdChars 100000
 openclaw config set plugins.entries.context-safe.config.prune.keepRecentToolResults 5
 openclaw config set plugins.entries.context-safe.config.prune.placeholder "[pruned]"
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.enabled true
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseCompactionSummaries true
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseChildCompletionInjections true
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseDirectChatMetadata true
 ```
 
 ### 开发与验证
@@ -335,6 +345,12 @@ Default configuration:
     "thresholdChars": 100000,
     "keepRecentToolResults": 5,
     "placeholder": "[pruned]"
+  },
+  "runtimeChurn": {
+    "enabled": true,
+    "collapseCompactionSummaries": true,
+    "collapseChildCompletionInjections": true,
+    "collapseDirectChatMetadata": true
   }
 }
 ```
@@ -345,6 +361,10 @@ Example OpenClaw config:
 openclaw config set plugins.entries.context-safe.config.prune.thresholdChars 100000
 openclaw config set plugins.entries.context-safe.config.prune.keepRecentToolResults 5
 openclaw config set plugins.entries.context-safe.config.prune.placeholder "[pruned]"
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.enabled true
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseCompactionSummaries true
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseChildCompletionInjections true
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseDirectChatMetadata true
 ```
 
 ### Development and Verification
