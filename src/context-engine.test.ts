@@ -90,6 +90,8 @@ describe("createContextSafeContextEngine", () => {
       thresholdChars?: number;
       keepRecentToolResults?: number;
       placeholder?: string;
+      normalizedRuntimeChurnCount?: number;
+      lastRuntimeChurnKinds?: string[];
       messages: Array<{ role?: string }>;
     };
 
@@ -99,7 +101,40 @@ describe("createContextSafeContextEngine", () => {
     expect(savedState.thresholdChars).toBe(100_000);
     expect(savedState.keepRecentToolResults).toBe(5);
     expect(savedState.placeholder).toBe("[pruned]");
+    expect(savedState.normalizedRuntimeChurnCount).toBe(0);
+    expect(savedState.lastRuntimeChurnKinds).toEqual([]);
     expect(savedState.messages).toHaveLength(messages.length);
+  });
+
+  it("records runtime-churn observability counts, kinds, and logs when normalization happens", async () => {
+    const info = vi.fn();
+    const engine = createContextSafeContextEngine({
+      logger: { info },
+    });
+    const sessionId = "session-runtime-churn-observability";
+
+    await engine.assemble({
+      sessionId,
+      messages: [
+        { role: "user", content: "inspect this" },
+        childCompletionInjectionMessage(),
+      ],
+      tokenBudget: 256,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      normalizedRuntimeChurnCount?: number;
+      lastRuntimeChurnKinds?: string[];
+      messages: Array<{ content?: unknown }>;
+    };
+
+    expect(savedState.normalizedRuntimeChurnCount).toBe(1);
+    expect(savedState.lastRuntimeChurnKinds).toEqual(["childCompletionInjection"]);
+    expect(textOf(savedState.messages[1])).toContain("Child task completion (success)");
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining("context-safe runtime-churn normalized=1"),
+    );
+    expect(info).toHaveBeenCalledWith(expect.stringContaining("childCompletionInjection"));
   });
 
   it("compacts canonical state from the session transcript for manual compact requests", async () => {

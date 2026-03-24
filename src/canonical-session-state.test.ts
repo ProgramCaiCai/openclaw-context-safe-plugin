@@ -62,6 +62,8 @@ describe("canonical session state", () => {
       lastPruneSource: "assemble",
       lastPruneGain: 12_345,
       lastThresholdChars: 50_000,
+      normalizedRuntimeChurnCount: 2,
+      lastRuntimeChurnKinds: ["compactionSummary", "childCompletionInjection"],
     };
 
     await saveCanonicalSessionState(state);
