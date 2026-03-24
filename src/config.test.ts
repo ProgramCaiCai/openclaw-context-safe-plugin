@@ -94,4 +94,22 @@ describe("context-safe config", () => {
       },
     });
   });
+
+  it("ships bilingual retention-tier defaults for report summaries and progress chatter", () => {
+    expect(DEFAULT_RETENTION_TIER_CRITICAL).toEqual(
+      expect.arrayContaining(["please", "report:", "请", "结论：", "报告：", "任务：", "状态："]),
+    );
+    expect(DEFAULT_RETENTION_TIER_COMPRESSIBLE).toEqual(
+      expect.arrayContaining(["running verification", "debug progress", "处理中", "正在验证", "调试进展"]),
+    );
+    expect(DEFAULT_RETENTION_TIER_FOLD_FIRST).toEqual(
+      expect.arrayContaining([
+        "conversation info (untrusted metadata)",
+        "telegram direct chat metadata",
+        "feishu direct chat metadata",
+        "会话信息（不可信元数据）",
+        "发送者（不可信元数据）",
+      ]),
+    );
+  });
 });

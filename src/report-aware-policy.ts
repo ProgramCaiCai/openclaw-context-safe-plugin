@@ -49,12 +49,11 @@ export function normalizeReportAwareMessage(
 
   const childCompletion = extractChildCompletionSummary(text);
   if (childCompletion) {
+    const reportLine = extractReportLine(text, reportPath);
     const bullets = extractReportAwareBullets(text, reportPath).slice(0, 3);
     return summarizedMessage(
       message,
-      [childCompletion.summary, `Report: ${reportPath}`, ...bullets.map((bullet) => `- ${bullet}`)].join(
-        "\n",
-      ),
+      [childCompletion.summary, reportLine, ...bullets.map((bullet) => `- ${bullet}`)].join("\n"),
     );
   }
 
@@ -63,9 +62,11 @@ export function normalizeReportAwareMessage(
     return unchanged(message);
   }
 
-  const summary = extractTaskLabel(text) ?? extractConciseSummary(text, reportPath, verdict);
+  const reportLine = extractReportLine(text, reportPath);
+  const summary = extractTaskLabel(text) ?? extractConciseSummary(text, reportPath, verdict, reportLine);
+  const keyPointsLine = extractReportAwareKeyPointsLine(text, reportPath);
   const bullets = extractReportAwareBullets(text, reportPath).slice(0, 3);
-  const lines = [summary, verdict, `Report: ${reportPath}`, ...bullets.map((bullet) => `- ${bullet}`)].filter(
+  const lines = [summary, verdict, reportLine, keyPointsLine, ...bullets.map((bullet) => `- ${bullet}`)].filter(
     (line): line is string => typeof line === "string" && line.length > 0,
   );
   return summarizedMessage(message, lines.join("\n"));
@@ -110,11 +111,13 @@ function extractReportPath(text: string): string | undefined {
 }
 
 function extractVerdictOrOutcome(text: string): string | undefined {
-  return (
-    captureLine(text, /^Verdict:\s*(.+)$/im, "Verdict") ??
-    captureLine(text, /^Outcome:\s*(.+)$/im, "Outcome") ??
-    captureLine(text, /^Status:\s*(.+)$/im, "Status")
-  );
+  return captureLabeledLine(text, [
+    { pattern: /^Verdict:\s*(.+)$/im, label: "Verdict" },
+    { pattern: /^Outcome:\s*(.+)$/im, label: "Outcome" },
+    { pattern: /^Status:\s*(.+)$/im, label: "Status" },
+    { pattern: /^结论[:：]\s*(.+)$/im, label: "结论", separator: "：" },
+    { pattern: /^状态[:：]\s*(.+)$/im, label: "状态", separator: "：" },
+  ]);
 }
 
 function extractChildCompletionSummary(text: string): { summary: string } | undefined {
@@ -135,29 +138,39 @@ function extractChildCompletionSummary(text: string): { summary: string } | unde
 }
 
 function extractTaskLabel(text: string): string | undefined {
-  return (
-    captureLine(text, /^Task:\s*(.+)$/im, "Task") ??
-    captureLine(text, /^Task label:\s*(.+)$/im, "Task label") ??
-    captureLine(text, /^Summary:\s*(.+)$/im, "Summary")
-  );
+  return captureLabeledLine(text, [
+    { pattern: /^Task:\s*(.+)$/im, label: "Task" },
+    { pattern: /^Task label:\s*(.+)$/im, label: "Task label" },
+    { pattern: /^Summary:\s*(.+)$/im, label: "Summary" },
+    { pattern: /^任务[:：]\s*(.+)$/im, label: "任务", separator: "：" },
+    { pattern: /^摘要[:：]\s*(.+)$/im, label: "摘要", separator: "：" },
+  ]);
 }
 
-function extractConciseSummary(text: string, reportPath: string, verdict: string): string | undefined {
+function extractConciseSummary(
+  text: string,
+  reportPath: string,
+  verdict: string,
+  reportLine: string,
+): string | undefined {
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) {
       continue;
     }
-    if (line === verdict || line === `Report: ${reportPath}` || line === reportPath) {
+    if (line === verdict || line === reportLine || line === reportPath) {
       continue;
     }
     if (/^[-*]\s+/.test(line) || /^\d+\.\s+/.test(line)) {
       continue;
     }
-    if (/^Key points:\s*/i.test(line)) {
+    if (/^(?:Key points:\s*|关键点[:：]\s*)/i.test(line)) {
       continue;
     }
-    if (/^(Verdict|Outcome|Status|Task|Task label|Summary|Report):/i.test(line)) {
+    if (/^(?:Verdict|Outcome|Status|Task|Task label|Summary|Report):/i.test(line)) {
+      continue;
+    }
+    if (/^(?:任务|摘要|结论|状态|报告)[:：]/.test(line)) {
       continue;
     }
     return compactWhitespace(line);
@@ -166,7 +179,8 @@ function extractConciseSummary(text: string, reportPath: string, verdict: string
 }
 
 function extractReportAwareBullets(text: string, reportPath: string): string[] {
-  const bulletLines = text
+  return dedupe(
+    text
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => /^[-*]\s+/.test(line) || /^\d+\.\s+/.test(line))
@@ -174,38 +188,76 @@ function extractReportAwareBullets(text: string, reportPath: string): string[] {
     .map(compactWhitespace)
     .filter((line) => line.length > 0)
     .filter((line) => line !== reportPath)
-    .filter((line) => !line.includes(reportPath));
+    .filter((line) => !line.includes(reportPath)),
+  );
+}
 
-  if (bulletLines.length > 0) {
-    return dedupe(bulletLines);
-  }
+function extractReportLine(text: string, reportPath: string): string {
+  return (
+    captureLabeledLine(text, [
+      { pattern: /^Report:\s*(.+)$/im, label: "Report" },
+      { pattern: /^报告[:：]\s*(.+)$/im, label: "报告", separator: "：" },
+    ]) ?? `Report: ${reportPath}`
+  );
+}
 
-  const keyPoints = captureLine(text, /^Key points:\s*(.+)$/im);
+function extractReportAwareKeyPointsLine(text: string, reportPath: string): string | undefined {
+  const keyPoints = captureListLine(text, [
+    { pattern: /^Key points:\s*(.+)$/im, label: "Key points", itemSeparator: "; " },
+    { pattern: /^关键点[:：]\s*(.+)$/im, label: "关键点", labelSeparator: "：", itemSeparator: "；" },
+  ]);
   if (!keyPoints) {
-    return [];
+    return undefined;
   }
 
-  return dedupe(
-    keyPoints
-      .split(/\s*;\s*/)
+  const values = dedupe(
+    keyPoints.value
+      .split(/\s*[;；]\s*/)
       .map(compactWhitespace)
       .filter((line) => line.length > 0)
       .filter((line) => line !== reportPath)
       .filter((line) => !line.includes(reportPath)),
   );
+  if (values.length === 0) {
+    return undefined;
+  }
+  return `${keyPoints.label}${keyPoints.labelSeparator}${values.join(keyPoints.itemSeparator)}`;
 }
 
-function captureLine(text: string, pattern: RegExp, label?: string): string | undefined {
+function captureLine(text: string, pattern: RegExp): string | undefined {
   const match = pattern.exec(text);
   const value = match?.[1];
   if (!value) {
     return undefined;
   }
   const normalized = compactWhitespace(value);
-  if (!normalized) {
-    return undefined;
+  return normalized || undefined;
+}
+
+function captureLabeledLine(
+  text: string,
+  patterns: Array<{ pattern: RegExp; label: string; separator?: string }>,
+): string | undefined {
+  for (const { pattern, label, separator = ": " } of patterns) {
+    const value = captureLine(text, pattern);
+    if (value) {
+      return `${label}${separator}${value}`;
+    }
   }
-  return label ? `${label}: ${normalized}` : normalized;
+  return undefined;
+}
+
+function captureListLine(
+  text: string,
+  patterns: Array<{ pattern: RegExp; label: string; labelSeparator?: string; itemSeparator: string }>,
+): { label: string; labelSeparator: string; itemSeparator: string; value: string } | undefined {
+  for (const { pattern, label, labelSeparator = ": ", itemSeparator } of patterns) {
+    const value = captureLine(text, pattern);
+    if (value) {
+      return { label, labelSeparator, itemSeparator, value };
+    }
+  }
+  return undefined;
 }
 
 function dedupe(values: string[]): string[] {

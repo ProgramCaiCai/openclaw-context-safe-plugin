@@ -617,6 +617,32 @@ describe("createContextSafeContextEngine", () => {
     );
   });
 
+  it("normalizes newly appended Feishu direct-chat metadata during afterTurn sync", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-runtime-churn-feishu";
+    const baseMessages = [{ role: "assistant", content: [{ type: "text", text: "ready" }] }];
+    const finalMessages = [...baseMessages, feishuDirectChatMetadataMessage()];
+
+    await engine.assemble({
+      sessionId,
+      messages: baseMessages,
+      tokenBudget: 512,
+    });
+    await engine.afterTurn({
+      sessionId,
+      sessionFile: "/tmp/runtime-churn-feishu.jsonl",
+      messages: finalMessages,
+      prePromptMessageCount: baseMessages.length,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      messages: Array<{ content?: unknown }>;
+    };
+    expect(textOf(savedState.messages[1])).toContain("Feishu direct chat metadata");
+    expect(textOf(savedState.messages[1])).toContain("请基于上一轮结果继续。");
+    expect(textOf(savedState.messages[1])).not.toContain("会话信息（不可信元数据）");
+  });
+
   it("persists report-aware summaries in canonical state after sync", async () => {
     const engine = createContextSafeContextEngine();
     const sessionId = "session-report-aware-summary";
@@ -715,6 +741,45 @@ describe("createContextSafeContextEngine", () => {
     expect(canonicalCharCount(directState.messages)).toBeLessThan(
       canonicalCharCount(backgroundState.messages),
     );
+  });
+
+  it("detects both Telegram and Feishu wrapper histories as direct-chat sessions", async () => {
+    const engine = createContextSafeContextEngine();
+    const telegramSessionId = "session-mode-direct-telegram";
+    const feishuSessionId = "session-mode-direct-feishu";
+
+    await engine.assemble({
+      sessionId: telegramSessionId,
+      messages: [
+        telegramDirectChatMetadataMessage(),
+        telegramDirectChatMetadataMessage(),
+      ],
+      tokenBudget: 512,
+    });
+    await engine.assemble({
+      sessionId: feishuSessionId,
+      messages: [
+        feishuDirectChatMetadataMessage(),
+        feishuDirectChatMetadataMessage(),
+      ],
+      tokenBudget: 512,
+    });
+
+    const telegramState = JSON.parse(fs.readFileSync(canonicalStatePath(telegramSessionId), "utf8")) as {
+      sessionMode?: string;
+      messages: Array<{ content?: unknown }>;
+    };
+    const feishuState = JSON.parse(fs.readFileSync(canonicalStatePath(feishuSessionId), "utf8")) as {
+      sessionMode?: string;
+      messages: Array<{ content?: unknown }>;
+    };
+
+    expect(telegramState.sessionMode).toBe("direct-chat");
+    expect(feishuState.sessionMode).toBe("direct-chat");
+    expect(telegramState.messages).toHaveLength(1);
+    expect(feishuState.messages).toHaveLength(1);
+    expect(textOf(telegramState.messages[0])).toContain("Telegram direct chat metadata");
+    expect(textOf(feishuState.messages[0])).toContain("Feishu direct chat metadata");
   });
 
   it("collapses background-subagent completion residue more aggressively than direct-chat history", async () => {
@@ -1118,6 +1183,24 @@ function telegramDirectChatMetadataMessage() {
           "Sender (untrusted metadata)",
           '{"id":"440811495","display_name":"编程菜菜","username":"programcaicai"}',
           "Please continue from the last result.",
+        ].join("\n"),
+      },
+    ],
+  };
+}
+
+function feishuDirectChatMetadataMessage() {
+  return {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: [
+          "会话信息（不可信元数据）",
+          '{"channel":"feishu","chat_type":"p2p","chat_id":"ou_123456","thread_id":"p2p"}',
+          "发送者（不可信元数据）",
+          '{"id":"ou_123456","display_name":"编程菜菜","user_id":"u_987654"}',
+          "请基于上一轮结果继续。",
         ].join("\n"),
       },
     ],

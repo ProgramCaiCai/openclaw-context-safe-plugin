@@ -364,10 +364,18 @@ function collapseAcpRunProgress(messages: ContextSafeMessage[]): ContextSafeMess
 function isDirectChatSignalMessage(message: ContextSafeMessage): boolean {
   const text = messageText(message);
   const normalized = text.toLowerCase();
+  const hasMetadataWrapper =
+    (text.includes("Conversation info (untrusted metadata)") &&
+      text.includes("Sender (untrusted metadata)")) ||
+    (text.includes("会话信息（不可信元数据）") && text.includes("发送者（不可信元数据）"));
+  const hasDirectChatType =
+    normalized.includes('"chat_type":"direct"') ||
+    normalized.includes('"chat_type":"dm"') ||
+    normalized.includes('"chat_type":"p2p"');
   return (
     normalized.includes("telegram direct chat metadata") ||
-    normalized.includes("conversation info (untrusted metadata)") ||
-    normalized.includes('"chat_type":"direct"')
+    normalized.includes("feishu direct chat metadata") ||
+    (hasMetadataWrapper && hasDirectChatType)
   );
 }
 
