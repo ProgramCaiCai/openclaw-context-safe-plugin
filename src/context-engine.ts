@@ -12,6 +12,7 @@ import {
   samePruneConfig,
   type ContextSafePruneConfig,
   type ContextSafeRuntimeChurnConfig,
+  type ContextSafeSessionMode,
 } from "./config.js";
 import {
   normalizeRuntimeChurnMessages,
