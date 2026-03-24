@@ -30,6 +30,7 @@
     "src/config.ts",
     "src/context-engine.ts",
     "src/hooks.ts",
+    "src/runtime-churn-policy.ts",
     "src/tool-result-notices.ts",
     "src/tool-result-persist.ts",
     "src/tool-result-policy.ts"

@@ -241,6 +241,10 @@ function estimateUnknownChars(value: unknown): number {
 }
 
 function estimateMessageChars(message: ContextSafeMessage): number {
+  if (hasRuntimeChurnAnnotation(message)) {
+    return textBlocksOf(message).join("\n").length;
+  }
+
   if (message.role === "user") {
     if (typeof message.content === "string") {
       return message.content.length;
@@ -379,6 +383,16 @@ function extractPathCandidates(value: unknown): string[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasRuntimeChurnAnnotation(message: ContextSafeMessage): boolean {
+  const value = message.contextSafeRuntimeChurn;
+  return (
+    !!value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as { normalized?: unknown }).normalized === true
+  );
 }
 
 function asTrimmedString(value: unknown): string | undefined {

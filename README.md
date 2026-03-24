@@ -18,11 +18,14 @@
 - 给 `web_fetch` 自动补默认安全参数：`maxChars=12000`
 - 在 `tool_result_persist` 阶段把超大的 `exec` / `bash` / `web_fetch` / `read` 结果改写成“小预览 + artifact 路径”
 - 把过大的 `details` 压缩成有界元数据，避免 transcript 被大对象撑爆
+- 在 canonical transcript 同步阶段折叠高频 runtime churn，当前覆盖 compaction 摘要、内部 child-result 注入块、Telegram 私聊元数据包装
 - 在 `contextEngine.assemble()` 阶段维护插件自有的 canonical context transcript，并在达到阈值后做一次可持续的上下文裁剪
 
 ### Canonical Context Transcript
 
 插件不会改写 OpenClaw 原始 transcript。它会为每个 `sessionId` 维护一份插件自有的 canonical context transcript，用来决定后续每轮真正送进模型的上下文。
+
+runtime churn slimming 发生在消息已经进入 transcript 之后的 canonical-state 同步阶段。它当前只做三类窄规则折叠：compaction summary、内部 child-result completion 注入块、Telegram 私聊元数据包装。它不会阻止 OpenClaw 核心继续生成这些事件，也不会改写完成判定真相源。
 
 当估算出来的 `pruneGain >= thresholdChars` 时，插件会把 canonical transcript 裁剪并持久化，因此后续请求看到的就是裁剪后的基线，而不是再次从原始历史重复计算同一批噪声。
 
@@ -154,6 +157,12 @@ canonical session state 也会保存在同一 artifact 根目录下：
     "thresholdChars": 100000,
     "keepRecentToolResults": 5,
     "placeholder": "[pruned]"
+  },
+  "runtimeChurn": {
+    "enabled": true,
+    "collapseCompactionSummaries": true,
+    "collapseChildCompletionInjections": true,
+    "collapseDirectChatMetadata": true
   }
 }
 ```
@@ -164,7 +173,18 @@ OpenClaw 配置示例：
 openclaw config set plugins.entries.context-safe.config.prune.thresholdChars 100000
 openclaw config set plugins.entries.context-safe.config.prune.keepRecentToolResults 5
 openclaw config set plugins.entries.context-safe.config.prune.placeholder "[pruned]"
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.enabled true
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseCompactionSummaries true
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseChildCompletionInjections true
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseDirectChatMetadata true
 ```
+
+canonical session state 会额外记录两组轻量观测字段：
+
+- `normalizedRuntimeChurnCount`：累计有多少条消息被 runtime churn slim 规则折叠过
+- `lastRuntimeChurnKinds`：最近一次命中的 churn 类型列表
+
+当某次同步真的发生折叠时，logger 会输出一条类似 `context-safe runtime-churn normalized=1 kinds=childCompletionInjection` 的信息。
 
 ### 开发与验证
 
@@ -180,6 +200,7 @@ python3 -m py_compile scripts/install.py
 - `src/hooks.ts`：官方 hook 入口
 - `src/tool-result-persist.ts`：artifact、preview、details 压缩
 - `src/context-engine.ts`：context engine
+- `src/runtime-churn-policy.ts`：runtime churn 折叠规则
 - `src/tool-result-policy.ts`：assemble 阶段的 tool result 裁剪策略
 - `scripts/install.py`：官方命令封装脚本
 
@@ -201,11 +222,14 @@ Important detail: official `v2026.3.8` does not expose an `excludeFromContext` p
 - adds a safe default for `web_fetch`: `maxChars=12000`
 - rewrites oversized `exec` / `bash` / `web_fetch` / `read` results during `tool_result_persist` into a short preview plus artifact path
 - compacts oversized `details` into bounded metadata
+- collapses high-churn runtime transcript noise during canonical-state sync, currently for compaction summaries, internal child-result injections, and Telegram direct-chat metadata wrappers
 - maintains a plugin-owned canonical context transcript in `contextEngine.assemble()` and applies durable prune decisions once the threshold is crossed
 
 ### Canonical Context Transcript
 
 The plugin does not rewrite OpenClaw's raw transcript. Instead, it keeps a plugin-owned canonical context transcript per `sessionId` and uses that canonical state for future model-context assembly.
+
+Runtime churn slimming happens only after messages have already entered the transcript, during canonical-state sync. The current rules are intentionally narrow: compaction summaries, internal child-result completion injections, and Telegram direct-chat metadata wrappers. This plugin does not stop OpenClaw core from emitting those events, and it does not redefine OpenClaw's completion truth source.
 
 When the estimated `pruneGain >= thresholdChars`, the plugin prunes and persists the canonical transcript. Future requests then start from the pruned baseline instead of recalculating against the same historical noise every turn.
 
@@ -335,6 +359,12 @@ Default configuration:
     "thresholdChars": 100000,
     "keepRecentToolResults": 5,
     "placeholder": "[pruned]"
+  },
+  "runtimeChurn": {
+    "enabled": true,
+    "collapseCompactionSummaries": true,
+    "collapseChildCompletionInjections": true,
+    "collapseDirectChatMetadata": true
   }
 }
 ```
@@ -345,7 +375,18 @@ Example OpenClaw config:
 openclaw config set plugins.entries.context-safe.config.prune.thresholdChars 100000
 openclaw config set plugins.entries.context-safe.config.prune.keepRecentToolResults 5
 openclaw config set plugins.entries.context-safe.config.prune.placeholder "[pruned]"
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.enabled true
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseCompactionSummaries true
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseChildCompletionInjections true
+openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseDirectChatMetadata true
 ```
+
+Canonical session state also records two lightweight observability fields:
+
+- `normalizedRuntimeChurnCount`: cumulative number of messages collapsed by runtime-churn rules
+- `lastRuntimeChurnKinds`: churn kinds matched during the latest normalization pass
+
+When a sync pass actually normalizes something, the logger emits a line similar to `context-safe runtime-churn normalized=1 kinds=childCompletionInjection`.
 
 ### Development and Verification
 
@@ -361,5 +402,6 @@ Project layout:
 - `src/hooks.ts`: official hook entrypoints
 - `src/tool-result-persist.ts`: artifact writing, previews, and details compaction
 - `src/context-engine.ts`: context engine
+- `src/runtime-churn-policy.ts`: runtime churn normalization rules
 - `src/tool-result-policy.ts`: assemble-time tool-result policy
 - `scripts/install.py`: wrapper around official install commands

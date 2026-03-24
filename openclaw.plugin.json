@@ -28,6 +28,28 @@
             "default": "[pruned]"
           }
         }
+      },
+      "runtimeChurn": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "collapseCompactionSummaries": {
+            "type": "boolean",
+            "default": true
+          },
+          "collapseChildCompletionInjections": {
+            "type": "boolean",
+            "default": true
+          },
+          "collapseDirectChatMetadata": {
+            "type": "boolean",
+            "default": true
+          }
+        }
       }
     }
   }
