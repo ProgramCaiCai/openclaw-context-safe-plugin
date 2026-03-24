@@ -106,6 +106,13 @@ function assistantMessage(text: string) {
   };
 }
 
+function assistantWithThinking(thinking: string) {
+  return {
+    role: "assistant",
+    content: [{ type: "thinking", thinking }],
+  };
+}
+
 function toolResult(input: {
   toolName?: string;
   toolCallId?: string;
@@ -446,6 +453,106 @@ describe("prune threshold gating", () => {
     expect((result.messages[10] as { details?: unknown }).details).toEqual({
       raw: "e".repeat(4_000),
     });
+  });
+
+  it("uses the smaller normalized runtime-churn size during prune estimation", () => {
+    const rawGain = policy.estimatePruneGain({
+      messages: [
+        assistantWithThinking("t".repeat(12_000)),
+        toolResult({
+          toolName: "exec",
+          text: "x".repeat(12_000),
+          details: { raw: "y".repeat(12_000) },
+        }),
+        toolResult({ toolName: "read", text: "recent" }),
+      ],
+      thresholdChars: 1,
+      keepRecentToolResults: 1,
+      placeholder: "[pruned]",
+    });
+    const normalizedGain = policy.estimatePruneGain({
+      messages: [
+        assistantWithThinking("t".repeat(12_000)),
+        {
+          ...toolResult({
+            toolName: "exec",
+            text: "[runtime-churn normalized] Compaction summary collapsed.",
+            details: { raw: "y".repeat(12_000) },
+          }),
+          contextSafeRuntimeChurn: {
+            normalized: true,
+            kinds: ["compactionSummary"],
+          },
+        },
+        toolResult({ toolName: "read", text: "recent" }),
+      ],
+      thresholdChars: 1,
+      keepRecentToolResults: 1,
+      placeholder: "[pruned]",
+    });
+
+    expect(rawGain).toBeGreaterThan(normalizedGain);
+  });
+
+  it("preserves normalized child-completion summaries inside the protected tail", () => {
+    const result = policy.applyCanonicalPrune({
+      messages: [
+        userMessage("head"),
+        toolResult({
+          toolName: "exec",
+          text: "legacy result",
+          details: { raw: "r".repeat(18_000) },
+        }),
+        {
+          ...toolResult({
+            toolName: "exec",
+            text: "[runtime-churn normalized] Child task completion (success): runtime-churn-slimming.",
+          }),
+          contextSafeRuntimeChurn: {
+            normalized: true,
+            kinds: ["childCompletionInjection"],
+          },
+        },
+      ],
+      thresholdChars: 10_000,
+      keepRecentToolResults: 1,
+      placeholder: "[pruned]",
+    });
+
+    expect(result.pruned).toBe(true);
+    expect(textOf(result.messages[1])).toBe("[pruned]");
+    expect(textOf(result.messages[2])).toContain("Child task completion (success)");
+  });
+
+  it("treats normalized Telegram metadata wrappers like ordinary small user text", () => {
+    const plainGain = policy.estimatePruneGain({
+      messages: [
+        userMessage("Telegram direct chat metadata: channel=telegram; sender=编程菜菜."),
+        assistantWithThinking("t".repeat(9_000)),
+        toolResult({ toolName: "exec", text: "recent" }),
+      ],
+      thresholdChars: 1,
+      keepRecentToolResults: 1,
+      placeholder: "[pruned]",
+    });
+    const normalizedGain = policy.estimatePruneGain({
+      messages: [
+        {
+          ...userMessage("Telegram direct chat metadata: channel=telegram; sender=编程菜菜."),
+          contextSafeRuntimeChurn: {
+            normalized: true,
+            kinds: ["telegramDirectChatMetadata"],
+          },
+        },
+        assistantWithThinking("t".repeat(9_000)),
+        toolResult({ toolName: "exec", text: "recent" }),
+      ],
+      thresholdChars: 1,
+      keepRecentToolResults: 1,
+      placeholder: "[pruned]",
+    });
+
+    expect(normalizedGain).toBe(plainGain);
   });
 });
 
