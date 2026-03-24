@@ -105,6 +105,65 @@ describe("runtime churn policy", () => {
     expect(textOf(result.message)).not.toContain("Conversation info (untrusted metadata)");
   });
 
+  it("collapses Feishu direct-chat metadata wrappers with English metadata labels", () => {
+    const result = normalizeRuntimeChurnMessage(
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: [
+              "Conversation info (untrusted metadata)",
+              '{"channel":"feishu","chat_type":"p2p","chat_id":"ou_123456","thread_id":"p2p"}',
+              "Sender (untrusted metadata)",
+              '{"id":"ou_123456","display_name":"Program Cai","user_id":"u_987654"}',
+              "Please continue from the last Feishu result.",
+            ].join("\n"),
+          },
+        ],
+      },
+      defaultRuntimeChurn,
+    );
+
+    expect(result.normalized).toBe(true);
+    expect(result.kinds).toEqual(["telegramDirectChatMetadata"]);
+    expect(textOf(result.message)).toContain("Feishu direct chat metadata");
+    expect(textOf(result.message)).toContain("channel=feishu");
+    expect(textOf(result.message)).toContain("sender=Program Cai");
+    expect(textOf(result.message)).toContain("Please continue from the last Feishu result.");
+    expect(textOf(result.message)).not.toContain("Conversation info (untrusted metadata)");
+  });
+
+  it("collapses Feishu direct-chat metadata wrappers with Chinese metadata labels", () => {
+    const result = normalizeRuntimeChurnMessage(
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: [
+              "会话信息（不可信元数据）",
+              '{"channel":"feishu","chat_type":"p2p","chat_id":"ou_123456","thread_id":"p2p"}',
+              "发送者（不可信元数据）",
+              '{"id":"ou_123456","display_name":"编程菜菜","user_id":"u_987654"}',
+              "请基于上一轮结果继续。",
+            ].join("\n"),
+          },
+        ],
+      },
+      defaultRuntimeChurn,
+    );
+
+    expect(result.normalized).toBe(true);
+    expect(result.kinds).toEqual(["telegramDirectChatMetadata"]);
+    expect(textOf(result.message)).toContain("Feishu direct chat metadata");
+    expect(textOf(result.message)).toContain("channel=feishu");
+    expect(textOf(result.message)).toContain("sender=编程菜菜");
+    expect(textOf(result.message)).toContain("请基于上一轮结果继续。");
+    expect(textOf(result.message)).not.toContain("会话信息（不可信元数据）");
+    expect(textOf(result.message)).not.toContain("发送者（不可信元数据）");
+  });
+
   it("leaves ordinary user prompts and tool results untouched", () => {
     const prompt = {
       role: "user",

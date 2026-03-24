@@ -1,6 +1,16 @@
 import { type ContextSafeRuntimeChurnConfig } from "./config.js";
 import { type ContextSafeMessage } from "./tool-result-policy.js";
 
+const DIRECT_CHAT_CONVERSATION_LABELS = [
+  "Conversation info (untrusted metadata)",
+  "会话信息（不可信元数据）",
+] as const;
+
+const DIRECT_CHAT_SENDER_LABELS = [
+  "Sender (untrusted metadata)",
+  "发送者（不可信元数据）",
+] as const;
+
 export type RuntimeChurnKind =
   | "compactionSummary"
   | "childCompletionInjection"
@@ -131,15 +141,12 @@ function maybeCollapseChildCompletionInjection(text: string): string | undefined
 }
 
 function maybeCollapseTelegramDirectChatMetadata(text: string): string | undefined {
-  if (
-    !text.includes("Conversation info (untrusted metadata)") ||
-    !text.includes("Sender (untrusted metadata)")
-  ) {
+  if (!containsAnyLabel(text, DIRECT_CHAT_CONVERSATION_LABELS) || !containsAnyLabel(text, DIRECT_CHAT_SENDER_LABELS)) {
     return undefined;
   }
 
-  const conversation = parseJsonLineAfterLabel(text, "Conversation info (untrusted metadata)");
-  const sender = parseJsonLineAfterLabel(text, "Sender (untrusted metadata)");
+  const conversation = parseJsonLineAfterLabels(text, DIRECT_CHAT_CONVERSATION_LABELS);
+  const sender = parseJsonLineAfterLabels(text, DIRECT_CHAT_SENDER_LABELS);
   if (!conversation || !sender || !looksLikeDirectChat(conversation)) {
     return undefined;
   }
@@ -168,8 +175,9 @@ function maybeCollapseTelegramDirectChatMetadata(text: string): string | undefin
   }
 
   const residual = compactWhitespace(stripMetadataWrappers(text));
+  const summaryChannel = normalizeDirectChatChannel(channel);
   const summary = [
-    "[runtime-churn normalized] Telegram direct chat metadata:",
+    `[runtime-churn normalized] ${summaryChannel} direct chat metadata:`,
     fields.join("; "),
   ]
     .filter((part) => part.length > 0)
@@ -326,9 +334,12 @@ function extractAnchorPaths(text: string, limit: number): string[] {
   return unique;
 }
 
-function parseJsonLineAfterLabel(text: string, label: string): Record<string, unknown> | undefined {
+function parseJsonLineAfterLabels(
+  text: string,
+  labels: readonly string[],
+): Record<string, unknown> | undefined {
   const lines = text.split(/\r?\n/);
-  const index = lines.findIndex((line) => line.trim() === label);
+  const index = lines.findIndex((line) => labels.includes(line.trim() as (typeof labels)[number]));
   if (index === -1) {
     return undefined;
   }
@@ -361,6 +372,10 @@ function looksLikeDirectChat(conversation: Record<string, unknown>): boolean {
   return normalized === "direct" || normalized === "dm" || normalized === "p2p";
 }
 
+function normalizeDirectChatChannel(channel: string | undefined): "Telegram" | "Feishu" {
+  return channel?.toLowerCase() === "feishu" ? "Feishu" : "Telegram";
+}
+
 function readStringField(value: Record<string, unknown>, keys: string[]): string | undefined {
   for (const key of keys) {
     const candidate = value[key];
@@ -379,8 +394,8 @@ function stripMetadataWrappers(text: string): string {
   for (const line of lines) {
     const trimmed = line.trim();
     if (
-      trimmed === "Conversation info (untrusted metadata)" ||
-      trimmed === "Sender (untrusted metadata)"
+      DIRECT_CHAT_CONVERSATION_LABELS.includes(trimmed as (typeof DIRECT_CHAT_CONVERSATION_LABELS)[number]) ||
+      DIRECT_CHAT_SENDER_LABELS.includes(trimmed as (typeof DIRECT_CHAT_SENDER_LABELS)[number])
     ) {
       skipNextJson = true;
       continue;
@@ -400,6 +415,10 @@ function stripMetadataWrappers(text: string): string {
 
 export function compactWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function containsAnyLabel(text: string, labels: readonly string[]): boolean {
+  return labels.some((label) => text.includes(label));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
