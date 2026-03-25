@@ -15,16 +15,31 @@ export const DEFAULT_RETENTION_TIER_CRITICAL = [
   "verdict:",
   "outcome:",
   "report:",
+  "请",
+  "继续",
+  "建议",
+  "结论：",
+  "报告：",
+  "任务：",
+  "状态：",
 ] as const;
 export const DEFAULT_RETENTION_TIER_COMPRESSIBLE = [
   "running verification",
   "status: still working",
   "debug progress",
+  "处理中",
+  "正在验证",
+  "调试进展",
+  "继续处理中",
 ] as const;
 export const DEFAULT_RETENTION_TIER_FOLD_FIRST = [
   "conversation info (untrusted metadata)",
   "sender (untrusted metadata)",
   "telegram direct chat metadata",
+  "feishu direct chat metadata",
+  "会话信息（不可信元数据）",
+  "发送者（不可信元数据）",
+  "飞书私聊元数据",
 ] as const;
 
 export type ContextSafePruneConfig = {

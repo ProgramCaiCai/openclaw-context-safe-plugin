@@ -653,6 +653,16 @@ describe("classifyCanonicalRetentionTier", () => {
     ).toBe("critical");
   });
 
+  it("classifies a recent chinese task summary as critical", () => {
+    expect(
+      classifyCanonicalRetentionTier({
+        message: userMessage("请继续处理。结论：通过。报告：reports/context-safe-cn/index.md"),
+        messageIndex: 10,
+        totalMessages: 12,
+      }),
+    ).toBe("critical");
+  });
+
   it("classifies long tool-result chatter as compressible", () => {
     expect(
       classifyCanonicalRetentionTier({
@@ -673,6 +683,26 @@ describe("classifyCanonicalRetentionTier", () => {
     ).toBe("compressible");
   });
 
+  it("classifies repeated chinese progress chatter as compressible", () => {
+    expect(
+      classifyCanonicalRetentionTier({
+        message: toolResult({
+          toolName: "exec",
+          text: [
+            "处理中",
+            "正在验证",
+            "调试进展",
+            "处理中",
+            "调试进展",
+            "处理中",
+          ].join("\n"),
+        }),
+        messageIndex: 4,
+        totalMessages: 20,
+      }),
+    ).toBe("compressible");
+  });
+
   it("classifies old metadata-wrapper text as foldFirst", () => {
     expect(
       classifyCanonicalRetentionTier({
@@ -682,6 +712,22 @@ describe("classifyCanonicalRetentionTier", () => {
           "Sender (untrusted metadata)",
           '{"id":"440811495","display_name":"编程菜菜"}',
           "Please continue from the last result.",
+        ].join("\n")),
+        messageIndex: 1,
+        totalMessages: 20,
+      }),
+    ).toBe("foldFirst");
+  });
+
+  it("classifies chinese metadata-wrapper text as foldFirst", () => {
+    expect(
+      classifyCanonicalRetentionTier({
+        message: userMessage([
+          "会话信息（不可信元数据）",
+          '{"channel":"feishu","chat_type":"direct","chat_id":"oc_123"}',
+          "发送者（不可信元数据）",
+          '{"id":"ou_123","display_name":"编程菜菜"}',
+          "请继续。",
         ].join("\n")),
         messageIndex: 1,
         totalMessages: 20,
