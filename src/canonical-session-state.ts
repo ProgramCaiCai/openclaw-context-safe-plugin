@@ -2,7 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveContextSafeArtifactBaseDir } from "./artifact-dir.js";
 import { type ContextSafePruneConfig, type ContextSafeSessionMode } from "./config.js";
+import { type ContextSafeSessionIndex } from "./session-index.js";
 import { type RuntimeChurnKind } from "./runtime-churn-policy.js";
+import { type ContextSafeSessionStats } from "./session-observability.js";
 import { type ContextSafeMessage } from "./tool-result-policy.js";
 
 const CANONICAL_SESSION_STATE_VERSION = 1;
@@ -34,6 +36,8 @@ export type CanonicalSessionState = {
   thresholdChars: number;
   keepRecentToolResults: number;
   placeholder: string;
+  contextSafeSessionIndex?: ContextSafeSessionIndex;
+  contextSafeStats?: ContextSafeSessionStats;
 } & Partial<CanonicalSessionPruneMetadata> &
   Partial<CanonicalSessionRuntimeChurnMetadata>;
 
@@ -96,6 +100,8 @@ export function createCanonicalSessionState(params: {
   messages: ContextSafeMessage[];
   pruneMetadata?: CanonicalSessionPruneMetadata;
   runtimeChurnMetadata?: CanonicalSessionRuntimeChurnMetadata;
+  contextSafeSessionIndex?: ContextSafeSessionIndex;
+  contextSafeStats?: ContextSafeSessionStats;
 }): CanonicalSessionState {
   const messages = structuredClone(params.messages);
   const runtimeChurnMetadata = params.runtimeChurnMetadata
@@ -114,6 +120,10 @@ export function createCanonicalSessionState(params: {
     thresholdChars: params.configSnapshot.thresholdChars,
     keepRecentToolResults: params.configSnapshot.keepRecentToolResults,
     placeholder: params.configSnapshot.placeholder,
+    ...(params.contextSafeSessionIndex
+      ? { contextSafeSessionIndex: structuredClone(params.contextSafeSessionIndex) }
+      : {}),
+    ...(params.contextSafeStats ? { contextSafeStats: structuredClone(params.contextSafeStats) } : {}),
     ...(params.pruneMetadata ? structuredClone(params.pruneMetadata) : {}),
     ...(runtimeChurnMetadata ? runtimeChurnMetadata : {}),
   };
@@ -143,6 +153,8 @@ function isCanonicalSessionState(value: unknown): value is CanonicalSessionState
     isOptionalPositiveInteger(value.thresholdChars) &&
     isOptionalNonNegativeInteger(value.keepRecentToolResults) &&
     isOptionalNonEmptyString(value.placeholder) &&
+    isOptionalContextSafeSessionIndex(value.contextSafeSessionIndex) &&
+    isOptionalContextSafeSessionStats(value.contextSafeStats) &&
     isOptionalIsoTimestamp(value.lastPrunedAt) &&
     isOptionalPruneSource(value.lastPruneSource) &&
     isOptionalNonNegativeInteger(value.lastPruneGain) &&
@@ -213,6 +225,91 @@ function isOptionalRuntimeChurnKinds(value: unknown): value is RuntimeChurnKind[
           entry === "telegramDirectChatMetadata",
       ))
   );
+}
+
+function isOptionalContextSafeSessionStats(value: unknown): value is ContextSafeSessionStats | undefined {
+  return value === undefined || isContextSafeSessionStats(value);
+}
+
+function isOptionalContextSafeSessionIndex(value: unknown): value is ContextSafeSessionIndex | undefined {
+  return value === undefined || isContextSafeSessionIndex(value);
+}
+
+function isContextSafeSessionIndex(value: unknown): value is ContextSafeSessionIndex {
+  return (
+    isRecord(value) &&
+    isStringArray(value.goals) &&
+    isStringArray(value.recentConclusions) &&
+    isStringArray(value.openThreads) &&
+    isContextSafeSessionIndexArtifacts(value.keyArtifacts) &&
+    isStringArray(value.recoveryHints)
+  );
+}
+
+function isContextSafeSessionStats(value: unknown): value is ContextSafeSessionStats {
+  return (
+    isRecord(value) &&
+    isOptionalNonNegativeInteger(value.artifactizedCount) &&
+    isOptionalNonNegativeInteger(value.artifactFallbackCount) &&
+    isOptionalNonNegativeInteger(value.detailsCompactedCount) &&
+    isOptionalNonNegativeInteger(value.detailsCollapsedCount) &&
+    isOptionalNonNegativeInteger(value.compactedDetailsCharsRemoved) &&
+    isOptionalNonNegativeInteger(value.prunedChars) &&
+    isPruneReasonCounts(value.pruneReasons) &&
+    isToolOffenderList(value.topToolOffenders)
+  );
+}
+
+function isContextSafeSessionIndexArtifacts(
+  value: unknown,
+): value is ContextSafeSessionIndex["keyArtifacts"] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (entry) =>
+        isRecord(entry) &&
+        typeof entry.toolName === "string" &&
+        entry.toolName.length > 0 &&
+        (entry.resultMode === "artifact" || entry.resultMode === "inline-fallback") &&
+        typeof entry.pointer === "string" &&
+        entry.pointer.length > 0 &&
+        typeof entry.preview === "string",
+    )
+  );
+}
+
+function isPruneReasonCounts(
+  value: unknown,
+): value is ContextSafeSessionStats["pruneReasons"] {
+  return (
+    isRecord(value) &&
+    isOptionalNonNegativeInteger(value.assemble) &&
+    isOptionalNonNegativeInteger(value.afterTurn) &&
+    isOptionalNonNegativeInteger(value.compact)
+  );
+}
+
+function isToolOffenderList(
+  value: unknown,
+): value is ContextSafeSessionStats["topToolOffenders"] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (entry) =>
+        isRecord(entry) &&
+        typeof entry.toolName === "string" &&
+        entry.toolName.length > 0 &&
+        isOptionalNonNegativeInteger(entry.messageCount) &&
+        isOptionalNonNegativeInteger(entry.approxChars) &&
+        isOptionalNonNegativeInteger(entry.artifactizedCount) &&
+        isOptionalNonNegativeInteger(entry.artifactFallbackCount) &&
+        isOptionalNonNegativeInteger(entry.detailsCompactedCount),
+    )
+  );
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
 }
 
 function isOptionalSessionMode(value: unknown): value is ContextSafeSessionMode | undefined {

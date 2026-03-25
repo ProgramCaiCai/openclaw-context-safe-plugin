@@ -15,14 +15,20 @@ const AGGRESSIVE_EXTERNALIZATION_TOOLS = new Set(["exec", "bash", "web_fetch"]);
 const OMIT = Symbol("omit");
 
 type ToolResultMessage = Record<string, unknown>;
+type PersistedResultMode = "artifact" | "inline" | "inline-fallback";
 type ContextSafeMetadata = {
+  resultMode?: PersistedResultMode;
   detailsCompacted?: boolean;
+  detailsCollapsed?: boolean;
   excludedFromContext?: boolean;
   originalChars?: number;
   originalTextChars?: number;
   originalDetailsChars?: number;
   outputFile?: string;
   previewChars?: number;
+  artifactWriteFailed?: boolean;
+  artifactFailureReason?: "artifact-write-failed";
+  collapseReason?: "post-compaction-hard-cap";
 };
 
 export function applyPersistedToolResultPolicy(params: {
@@ -48,7 +54,7 @@ export function applyPersistedToolResultPolicy(params: {
     })
   ) {
     const artifactPayload = stringifyArtifactPayload(params.message);
-    const outputFile = writeArtifactSync({
+    const artifactWrite = writeArtifactSync({
       toolName,
       toolCallId,
       payload: artifactPayload,
@@ -57,14 +63,19 @@ export function applyPersistedToolResultPolicy(params: {
     const preview = buildPreviewText(previewSource, MAX_INLINE_PREVIEW_CHARS);
     const notice = buildExternalizedNotice({
       toolName,
-      outputFile,
+      outputFile: artifactWrite.outputFile,
     });
-    const details = mergeContextSafeMetadata(detailsCompaction.value, {
+    const details = applyDetailsMetadata(detailsCompaction.value, {
+      resultMode: artifactWrite.outputFile ? "artifact" : "inline-fallback",
       excludedFromContext: true,
       originalTextChars: textChars,
       originalDetailsChars: detailsCompaction.originalChars,
-      outputFile,
+      outputFile: artifactWrite.outputFile,
       previewChars: MAX_INLINE_PREVIEW_CHARS,
+      artifactWriteFailed: artifactWrite.outputFile ? undefined : true,
+      artifactFailureReason: artifactWrite.outputFile ? undefined : artifactWrite.failureReason,
+    }, {
+      enforceHardCap: detailsCompaction.compacted,
     });
     return {
       message: replaceToolResultContent(params.message, `${notice}\n\n${preview}`, details),
@@ -73,7 +84,21 @@ export function applyPersistedToolResultPolicy(params: {
 
   if (detailsCompaction.compacted) {
     return {
-      message: replaceToolResultDetails(params.message, detailsCompaction.value),
+      message: replaceToolResultDetails(
+        params.message,
+        applyDetailsMetadata(detailsCompaction.value, {
+          resultMode: "inline",
+        }, {
+          enforceHardCap: true,
+        }),
+      ),
+    };
+  }
+
+  const inlineDetails = applyInlineResultMode((params.message as { details?: unknown }).details);
+  if (inlineDetails !== (params.message as { details?: unknown }).details) {
+    return {
+      message: replaceToolResultDetails(params.message, inlineDetails),
     };
   }
 
@@ -262,6 +287,35 @@ function mergeContextSafeMetadata(details: unknown, meta: ContextSafeMetadata): 
   };
 }
 
+function applyDetailsMetadata(
+  details: unknown,
+  meta: ContextSafeMetadata,
+  options?: { enforceHardCap?: boolean },
+): Record<string, unknown> {
+  const merged = mergeContextSafeMetadata(details, meta);
+  if (!options?.enforceHardCap || estimateChars(merged) <= MAX_PERSISTED_DETAILS_CHARS) {
+    return merged;
+  }
+
+  const collapsedMeta = isRecord(merged.contextSafe) ? merged.contextSafe : {};
+  return {
+    contextSafe: {
+      ...collapsedMeta,
+      detailsCollapsed: true,
+      collapseReason: "post-compaction-hard-cap",
+    },
+  };
+}
+
+function applyInlineResultMode(details: unknown): unknown {
+  if (details === undefined) {
+    return details;
+  }
+  return mergeContextSafeMetadata(details, {
+    resultMode: "inline",
+  });
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -352,15 +406,15 @@ function writeArtifactSync(params: {
   toolName?: string;
   toolCallId?: string;
   payload: string;
-}): string | undefined {
+}): { outputFile?: string; failureReason?: "artifact-write-failed" } {
   try {
     const directory = path.join(resolveArtifactBaseDir(), sanitizePathSegment(params.toolName));
     fs.mkdirSync(directory, { recursive: true });
     const filePath = path.join(directory, buildArtifactFileName(params));
     fs.writeFileSync(filePath, params.payload, "utf8");
-    return filePath;
+    return { outputFile: filePath };
   } catch {
-    return undefined;
+    return { failureReason: "artifact-write-failed" };
   }
 }
 

@@ -92,6 +92,16 @@ describe("createContextSafeContextEngine", () => {
       placeholder?: string;
       normalizedRuntimeChurnCount?: number;
       lastRuntimeChurnKinds?: string[];
+      contextSafeStats?: {
+        artifactizedCount?: number;
+        artifactFallbackCount?: number;
+        detailsCompactedCount?: number;
+        detailsCollapsedCount?: number;
+        compactedDetailsCharsRemoved?: number;
+        prunedChars?: number;
+        pruneReasons?: Record<string, number>;
+        topToolOffenders?: unknown[];
+      };
       messages: Array<{ role?: string }>;
     };
 
@@ -103,7 +113,184 @@ describe("createContextSafeContextEngine", () => {
     expect(savedState.placeholder).toBe("[pruned]");
     expect(savedState.normalizedRuntimeChurnCount).toBe(0);
     expect(savedState.lastRuntimeChurnKinds).toEqual([]);
+    expect(savedState.contextSafeStats).toEqual({
+      artifactizedCount: 0,
+      artifactFallbackCount: 0,
+      detailsCompactedCount: 0,
+      detailsCollapsedCount: 0,
+      compactedDetailsCharsRemoved: 0,
+      prunedChars: 0,
+      pruneReasons: {
+        assemble: 0,
+        afterTurn: 0,
+        compact: 0,
+      },
+      topToolOffenders: [
+        {
+          toolName: "read",
+          messageCount: 1,
+          approxChars: expect.any(Number),
+          artifactizedCount: 0,
+          artifactFallbackCount: 0,
+          detailsCompactedCount: 0,
+        },
+      ],
+    });
     expect(savedState.messages).toHaveLength(messages.length);
+  });
+
+  it("persists bounded context-safe stats derived from persisted tool-result metadata", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-context-safe-stats";
+
+    await engine.assemble({
+      sessionId,
+      messages: [
+        { role: "user", content: "inspect the artifacts" },
+        {
+          role: "toolResult",
+          toolName: "read",
+          content: [{ type: "text", text: "artifact preview" }],
+          details: {
+            contextSafe: {
+              resultMode: "artifact",
+              outputFile: "/tmp/read-artifact.json",
+              originalTextChars: 6_000,
+              originalDetailsChars: 1_500,
+            },
+          },
+        },
+        {
+          role: "toolResult",
+          toolName: "exec",
+          content: [{ type: "text", text: "fallback preview" }],
+          details: {
+            contextSafe: {
+              resultMode: "inline-fallback",
+              artifactWriteFailed: true,
+              detailsCompacted: true,
+              detailsCollapsed: true,
+              originalChars: 8_500,
+            },
+          },
+        },
+      ],
+      tokenBudget: 256,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      contextSafeStats?: {
+        artifactizedCount?: number;
+        artifactFallbackCount?: number;
+        detailsCompactedCount?: number;
+        detailsCollapsedCount?: number;
+        compactedDetailsCharsRemoved?: number;
+        prunedChars?: number;
+        pruneReasons?: Record<string, number>;
+        topToolOffenders?: Array<{
+          toolName?: string;
+          approxChars?: number;
+          messageCount?: number;
+        }>;
+      };
+    };
+
+    expect(savedState.contextSafeStats?.artifactizedCount).toBe(1);
+    expect(savedState.contextSafeStats?.artifactFallbackCount).toBe(1);
+    expect(savedState.contextSafeStats?.detailsCompactedCount).toBe(1);
+    expect(savedState.contextSafeStats?.detailsCollapsedCount).toBe(1);
+    expect(savedState.contextSafeStats?.compactedDetailsCharsRemoved).toBeGreaterThan(0);
+    expect(savedState.contextSafeStats?.prunedChars).toBe(0);
+    expect(savedState.contextSafeStats?.pruneReasons).toEqual({
+      assemble: 0,
+      afterTurn: 0,
+      compact: 0,
+    });
+    expect(savedState.contextSafeStats?.topToolOffenders).toEqual([
+      expect.objectContaining({
+        toolName: "exec",
+        messageCount: 1,
+        approxChars: expect.any(Number),
+      }),
+      expect.objectContaining({
+        toolName: "read",
+        messageCount: 1,
+        approxChars: expect.any(Number),
+      }),
+    ]);
+  });
+
+  it("injects a bounded synthetic session index message during assemble", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-index-assemble";
+
+    const result = await engine.assemble({
+      sessionId,
+      messages: [
+        { role: "user", content: "Goal: keep recovery hints easy to find." },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Conclusion: indexing is ready for assemble." }],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Next: inject the synthetic summary carefully." }],
+        },
+        {
+          role: "toolResult",
+          toolName: "exec",
+          content: [{ type: "text", text: "artifact preview" }],
+          details: {
+            contextSafe: {
+              resultMode: "artifact",
+              outputFile: "/tmp/assemble-index-artifact.json",
+            },
+          },
+        },
+      ],
+      tokenBudget: 128,
+    });
+
+    expect(textOf(result.messages[0])).toContain("[context-safe session index]");
+    expect(textOf(result.messages[0])).toContain("Goal: keep recovery hints easy to find.");
+    expect(textOf(result.messages[0])).toContain("/tmp/assemble-index-artifact.json");
+    expect(result.messages.slice(1).map((message) => textOf(message))).toContain(
+      "Goal: keep recovery hints easy to find.",
+    );
+  });
+
+  it("skips the synthetic session index when it would crowd out already-fitting context", async () => {
+    const engine = createContextSafeContextEngine();
+
+    const result = await engine.assemble({
+      sessionId: "session-index-tight-budget",
+      messages: [
+        { role: "user", content: "Goal: keep recent read output visible." },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Conclusion: the session index helps recovery." }],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Next: inject it only with headroom." }],
+        },
+        {
+          role: "toolResult",
+          toolName: "read",
+          content: [{ type: "text", text: "r".repeat(40) }],
+          details: {
+            contextSafe: {
+              resultMode: "inline",
+            },
+          },
+        },
+      ],
+      tokenBudget: 36,
+    });
+
+    expect(textOf(result.messages[0])).toBe("Goal: keep recent read output visible.");
+    expect(result.messages.map((message) => textOf(message))).not.toContain("[context-safe session index]");
+    expect(textOf(result.messages.at(-1))).toBe("r".repeat(40));
   });
 
   it("records runtime-churn observability counts, kinds, and logs when normalization happens", async () => {
@@ -237,7 +424,7 @@ describe("createContextSafeContextEngine", () => {
     ]);
     expect(toolResultDetails(result.messages)).toEqual([
       { raw: "h".repeat(10_000) },
-      { raw: "i".repeat(10_000) },
+      undefined,
       undefined,
       undefined,
       undefined,
@@ -460,6 +647,72 @@ describe("createContextSafeContextEngine", () => {
     ]);
   });
 
+  it("updates the bounded session index after afterTurn appends new canonical messages", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-index-after-turn";
+    const baseMessages = [
+      { role: "user", content: "Goal: land the session index safely." },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Conclusion: the fallback path is stable." }],
+      },
+    ];
+    const postTurnMessages = [
+      ...baseMessages,
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Next: thread the session index through assemble." }],
+      },
+      {
+        role: "toolResult",
+        toolName: "exec",
+        content: [{ type: "text", text: "preview" }],
+        details: {
+          contextSafe: {
+            resultMode: "artifact",
+            outputFile: "/tmp/session-index-artifact.json",
+          },
+        },
+      },
+    ];
+
+    await engine.assemble({
+      sessionId,
+      messages: baseMessages,
+      tokenBudget: 512,
+    });
+    await engine.afterTurn({
+      sessionId,
+      sessionFile: "/tmp/session-index.jsonl",
+      messages: postTurnMessages,
+      prePromptMessageCount: baseMessages.length,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      contextSafeSessionIndex?: {
+        goals?: string[];
+        recentConclusions?: string[];
+        openThreads?: string[];
+        keyArtifacts?: Array<{ pointer?: string }>;
+      };
+    };
+
+    expect(savedState.contextSafeSessionIndex).toEqual({
+      goals: ["Goal: land the session index safely."],
+      recentConclusions: ["Conclusion: the fallback path is stable."],
+      openThreads: ["Next: thread the session index through assemble."],
+      keyArtifacts: [
+        {
+          toolName: "exec",
+          resultMode: "artifact",
+          pointer: "/tmp/session-index-artifact.json",
+          preview: "preview",
+        },
+      ],
+      recoveryHints: [expect.stringContaining("rerun a narrower command")],
+    });
+  });
+
   it("prunes and persists canonical state during afterTurn for growth-heavy final turns", async () => {
     const info = vi.fn();
     const engine = createContextSafeContextEngine({
@@ -501,6 +754,10 @@ describe("createContextSafeContextEngine", () => {
       lastPruneSource?: string;
       lastPruneGain?: number;
       lastThresholdChars?: number;
+      contextSafeStats?: {
+        prunedChars?: number;
+        pruneReasons?: Record<string, number>;
+      };
       messages: Array<{ role?: string; content?: unknown; details?: unknown }>;
     };
 
@@ -508,6 +765,14 @@ describe("createContextSafeContextEngine", () => {
     expect(savedState.lastPruneSource).toBe("afterTurn");
     expect(savedState.lastPruneGain).toBeGreaterThan(0);
     expect(savedState.lastThresholdChars).toBe(50_000);
+    expect(savedState.contextSafeStats?.prunedChars).toBeGreaterThanOrEqual(
+      savedState.lastPruneGain ?? 0,
+    );
+    expect(savedState.contextSafeStats?.pruneReasons).toEqual({
+      assemble: 1,
+      afterTurn: 1,
+      compact: 0,
+    });
     expect(countThinkingBlocks(savedState.messages)).toBe(1);
     expect(toolResultTexts(savedState.messages)).toEqual([
       "[pruned]",
@@ -531,6 +796,60 @@ describe("createContextSafeContextEngine", () => {
     ]);
     expect(info).toHaveBeenCalledWith(expect.stringContaining("context-safe prune triggered"));
     expect(info).toHaveBeenCalledWith(expect.stringContaining("source=afterTurn"));
+  });
+
+  it("rebuilds missing session index data from older saved state files", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-index-legacy-rebuild";
+    const rawMessages = [
+      { role: "user", content: "Goal: rebuild the missing index." },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Conclusion: legacy state loaded." }],
+      },
+    ];
+
+    fs.mkdirSync(path.dirname(canonicalStatePath(sessionId)), { recursive: true });
+    fs.writeFileSync(
+      canonicalStatePath(sessionId),
+      JSON.stringify(
+        {
+          version: 1,
+          sessionId,
+          sourceMessageCount: rawMessages.length,
+          configSnapshot: {
+            thresholdChars: 100_000,
+            keepRecentToolResults: 5,
+            placeholder: "[pruned]",
+          },
+          messages: rawMessages,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await engine.assemble({
+      sessionId,
+      messages: rawMessages,
+      tokenBudget: 512,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      contextSafeSessionIndex?: {
+        goals?: string[];
+        recentConclusions?: string[];
+      };
+    };
+
+    expect(savedState.contextSafeSessionIndex).toEqual({
+      goals: ["Goal: rebuild the missing index."],
+      recentConclusions: ["Conclusion: legacy state loaded."],
+      openThreads: [],
+      keyArtifacts: [],
+      recoveryHints: [],
+    });
   });
 
   it("persists compact child-completion summaries instead of raw injected blobs", async () => {

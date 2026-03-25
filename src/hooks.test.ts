@@ -117,6 +117,7 @@ describe("applyToolResultPersistSafety", () => {
         contextSafe?: {
           excludedFromContext?: boolean;
           outputFile?: string;
+          resultMode?: string;
         };
       };
     };
@@ -126,9 +127,53 @@ describe("applyToolResultPersistSafety", () => {
     expect(textOf(message)).toContain("error: boom");
     expect(textOf(message).length).toBeLessThan(4500);
     expect(message.details?.contextSafe?.excludedFromContext).toBe(true);
+    expect(message.details?.contextSafe?.resultMode).toBe("artifact");
     expect(typeof outputFile).toBe("string");
     expect(outputFile ? fs.existsSync(outputFile) : false).toBe(true);
     expect(outputFile ? fs.readFileSync(outputFile, "utf-8") : "").toContain("error: boom");
+  });
+
+  it("falls back to bounded inline content when artifact persistence fails", () => {
+    const blockedPath = path.join(artifactDir, "blocked-artifact-root");
+    fs.writeFileSync(blockedPath, "not-a-directory", "utf8");
+    process.env.OPENCLAW_CONTEXT_SAFE_ARTIFACT_DIR = blockedPath;
+
+    const result = applyToolResultPersistSafety({
+      message: {
+        role: "toolResult",
+        toolName: "exec",
+        toolCallId: "call_exec_fallback",
+        content: [{ type: "text", text: `${"stderr line\n".repeat(260)}fatal: crashed` }],
+        details: {
+          exitCode: 1,
+          raw: "z".repeat(12_000),
+        },
+      },
+    });
+
+    const message = result.message as {
+      content?: unknown;
+      details?: {
+        contextSafe?: {
+          excludedFromContext?: boolean;
+          outputFile?: string;
+          resultMode?: string;
+          artifactWriteFailed?: boolean;
+          artifactFailureReason?: string;
+        };
+      };
+    };
+
+    expect(textOf(message)).toContain("excluded from context");
+    expect(textOf(message)).toContain("artifact save failed");
+    expect(textOf(message)).toContain("fatal: crashed");
+    expect(textOf(message)).toContain("rerun a narrower command");
+    expect(textOf(message).length).toBeLessThan(4500);
+    expect(message.details?.contextSafe?.excludedFromContext).toBe(true);
+    expect(message.details?.contextSafe?.outputFile).toBeUndefined();
+    expect(message.details?.contextSafe?.resultMode).toBe("inline-fallback");
+    expect(message.details?.contextSafe?.artifactWriteFailed).toBe(true);
+    expect(message.details?.contextSafe?.artifactFailureReason).toBe("artifact-write-failed");
   });
 
   it("compacts oversized details into a bounded metadata payload", () => {
@@ -154,13 +199,87 @@ describe("applyToolResultPersistSafety", () => {
           contextSafe: {
             detailsCompacted: true,
             originalChars: expect.any(Number),
+            resultMode: "inline",
           },
         },
       },
     });
   });
 
-  it("keeps small detail payloads intact", () => {
+  it("collapses post-compaction oversized object details to minimal metadata", () => {
+    const result = applyToolResultPersistSafety({
+      message: {
+        role: "toolResult",
+        toolName: "read",
+        content: [{ type: "text", text: "preview" }],
+        details: Object.fromEntries(
+          Array.from({ length: 20 }, (_, index) => [`key${index}`, "x".repeat(1_000)]),
+        ),
+      },
+    });
+
+    const details = (result.message as { details?: Record<string, unknown> }).details;
+    const contextSafe = details?.contextSafe as Record<string, unknown> | undefined;
+
+    expect(details).toEqual({
+      contextSafe: {
+        detailsCompacted: true,
+        detailsCollapsed: true,
+        collapseReason: "post-compaction-hard-cap",
+        originalChars: expect.any(Number),
+        resultMode: "inline",
+      },
+    });
+    expect(JSON.stringify(details).length).toBeLessThanOrEqual(4_096);
+    expect(contextSafe?.originalChars).toBeGreaterThan(4_096);
+  });
+
+  it("keeps externalized results bounded when compacted details still exceed the hard cap", () => {
+    const result = applyToolResultPersistSafety({
+      message: {
+        role: "toolResult",
+        toolName: "exec",
+        toolCallId: "call_exec_hard_cap",
+        content: [{ type: "text", text: `${"stdout line\n".repeat(260)}done` }],
+        details: {
+          exitCode: 0,
+          nested: Array.from({ length: 12 }, () => "y".repeat(1_000)),
+        },
+      },
+    });
+
+    const message = result.message as {
+      content?: unknown;
+      details?: {
+        contextSafe?: {
+          outputFile?: string;
+          resultMode?: string;
+          detailsCompacted?: boolean;
+          detailsCollapsed?: boolean;
+          collapseReason?: string;
+        };
+      };
+    };
+
+    expect(message.details).toEqual({
+      contextSafe: {
+        excludedFromContext: true,
+        originalTextChars: expect.any(Number),
+        originalDetailsChars: expect.any(Number),
+        outputFile: expect.any(String),
+        previewChars: 4_000,
+        detailsCompacted: true,
+        detailsCollapsed: true,
+        collapseReason: "post-compaction-hard-cap",
+        originalChars: expect.any(Number),
+        resultMode: "artifact",
+      },
+    });
+    expect(JSON.stringify(message.details).length).toBeLessThanOrEqual(4_096);
+    expect(message.details?.contextSafe?.outputFile).toEqual(expect.any(String));
+  });
+
+  it("adds inline mode metadata to small detail payloads without changing the content", () => {
     const result = applyToolResultPersistSafety({
       message: {
         role: "toolResult",
@@ -168,6 +287,7 @@ describe("applyToolResultPersistSafety", () => {
         content: [{ type: "text", text: "preview" }],
         details: {
           lineCount: 12,
+          nested: { ok: true },
         },
       },
     });
@@ -179,6 +299,10 @@ describe("applyToolResultPersistSafety", () => {
         content: [{ type: "text", text: "preview" }],
         details: {
           lineCount: 12,
+          nested: { ok: true },
+          contextSafe: {
+            resultMode: "inline",
+          },
         },
       },
     });
