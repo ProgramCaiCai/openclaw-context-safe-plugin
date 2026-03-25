@@ -2,15 +2,43 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
+const repoRoot = path.join(import.meta.dirname, "..");
+
+function readPackageJson() {
+  return JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8")) as {
+    files?: string[];
+  };
+}
+
 describe("package manifest", () => {
   it("publishes the install helper script referenced by README", () => {
-    const packageJson = JSON.parse(
-      fs.readFileSync(path.join(import.meta.dirname, "..", "package.json"), "utf8"),
-    ) as {
-      files?: string[];
-    };
+    const packageJson = readPackageJson();
 
     expect(packageJson.files).toContain("scripts/install.py");
+  });
+
+  it("publishes all src/context-engine.ts runtime-imported source files", () => {
+    const contextEngineSource = fs.readFileSync(path.join(repoRoot, "src", "context-engine.ts"), "utf8");
+    const packageJson = readPackageJson();
+    const expectedRuntimeImports = [
+      "./canonical-session-state.js",
+      "./config.js",
+      "./runtime-churn-policy.js",
+      "./report-aware-policy.js",
+      "./session-index.js",
+      "./session-observability.js",
+      "./tool-result-policy.js",
+    ];
+    const actualRuntimeImports = Array.from(
+      contextEngineSource.matchAll(/from "(\.\/[^"]+\.js)";/g),
+      ([, specifier]) => specifier,
+    );
+    const expectedPublishedFiles = expectedRuntimeImports.map((specifier) =>
+      path.posix.join("src", specifier.replace(/^\.\//, "").replace(/\.js$/, ".ts")),
+    );
+
+    expect(actualRuntimeImports).toEqual(expectedRuntimeImports);
+    expect(packageJson.files).toEqual(expect.arrayContaining(expectedPublishedFiles));
   });
 
   it("declares the prune and runtime-churn config schema in openclaw.plugin.json", () => {

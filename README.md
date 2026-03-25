@@ -68,11 +68,18 @@ runtime churn slimming 发生在消息已经进入 transcript 之后的 canonica
 
 推荐优先使用仓库里附带的 `scripts/install.py`。
 
-安装：
+默认安装（推荐，先 `npm pack` 再安装生成的 `.tgz`）：
 
 ```bash
 cd projects/openclaw-context-safe-plugin
 python3 scripts/install.py
+```
+
+本地开发时如果你明确需要可变的源码 link-install，再显式使用：
+
+```bash
+cd projects/openclaw-context-safe-plugin
+python3 scripts/install.py --link
 ```
 
 卸载：
@@ -91,20 +98,23 @@ python3 scripts/install.py --dry-run
 
 ### 官方命令安装
 
-在插件项目目录执行官方命令：
+推荐的官方命令流程也是先打包，再安装生成的归档：
 
 ```bash
 cd projects/openclaw-context-safe-plugin
-openclaw plugins install --link .
+ARTIFACT_DIR=/tmp/openclaw-context-safe-plugin-npm-artifacts
+mkdir -p "$ARTIFACT_DIR"
+npm pack --pack-destination "$ARTIFACT_DIR"
+openclaw plugins install "$ARTIFACT_DIR"/context-safe-*.tgz
 openclaw config set plugins.entries.context-safe.enabled true
 openclaw config set plugins.slots.contextEngine context-safe
 ```
 
-如果你不想使用 `--link`，也可以直接 copy-install：
+只有在本地开发、并且你明确希望工作区修改立即影响已安装插件时，才使用源码 link-install：
 
 ```bash
 cd projects/openclaw-context-safe-plugin
-openclaw plugins install .
+openclaw plugins install --link .
 openclaw config set plugins.entries.context-safe.enabled true
 openclaw config set plugins.slots.contextEngine context-safe
 ```
@@ -311,11 +321,18 @@ Typical effects:
 
 Recommended first path: use the repository's `scripts/install.py`.
 
-Install:
+Default install (recommended: pack first, then install the generated `.tgz`):
 
 ```bash
 cd projects/openclaw-context-safe-plugin
 python3 scripts/install.py
+```
+
+For local development only, opt into a mutable source install explicitly:
+
+```bash
+cd projects/openclaw-context-safe-plugin
+python3 scripts/install.py --link
 ```
 
 Uninstall:
@@ -334,20 +351,23 @@ python3 scripts/install.py --dry-run
 
 ### Official Install Commands
 
-Run the official commands from the plugin project directory:
+The recommended official CLI flow is to pack the plugin first and install the generated archive:
 
 ```bash
 cd projects/openclaw-context-safe-plugin
-openclaw plugins install --link .
+ARTIFACT_DIR=/tmp/openclaw-context-safe-plugin-npm-artifacts
+mkdir -p "$ARTIFACT_DIR"
+npm pack --pack-destination "$ARTIFACT_DIR"
+openclaw plugins install "$ARTIFACT_DIR"/context-safe-*.tgz
 openclaw config set plugins.entries.context-safe.enabled true
 openclaw config set plugins.slots.contextEngine context-safe
 ```
 
-If you prefer copy-install instead of linking:
+Only use a source `--link` install when you explicitly want a mutable local-development setup:
 
 ```bash
 cd projects/openclaw-context-safe-plugin
-openclaw plugins install .
+openclaw plugins install --link .
 openclaw config set plugins.entries.context-safe.enabled true
 openclaw config set plugins.slots.contextEngine context-safe
 ```
