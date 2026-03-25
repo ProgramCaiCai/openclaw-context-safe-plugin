@@ -673,130 +673,79 @@ describe("createContextSafeContextEngine", () => {
     expect(textOf(savedState.messages[1])).not.toContain("extra noisy bullet should be dropped");
   });
 
-  it("slims direct-chat wrapper history more than a modest background-subagent transcript", async () => {
+  it("preserves repeated direct-chat wrapped user turns instead of dropping later turns", async () => {
     const engine = createContextSafeContextEngine();
-    const directSessionId = "session-mode-direct-slim";
-    const backgroundSessionId = "session-mode-background-modest";
+    const sessionId = "session-mode-direct-preserve";
 
     await engine.assemble({
-      sessionId: directSessionId,
+      sessionId,
       messages: [
-        telegramDirectChatMetadataMessage(),
-        telegramDirectChatMetadataMessage(),
-        telegramDirectChatMetadataMessage(),
-      ],
-      tokenBudget: 512,
-    });
-    await engine.assemble({
-      sessionId: backgroundSessionId,
-      messages: [
-        backgroundProgressChatterMessage("status: still working"),
-        backgroundCompletionResidueMessage(
-          "background-modest",
-          "reports/context-safe-background-modest-2026-03-24/index.md",
-        ),
+        telegramDirectChatMetadataMessage("Please continue from the last result."),
+        telegramDirectChatMetadataMessage("Please continue with the newest DM context."),
       ],
       tokenBudget: 512,
     });
 
-    const directState = JSON.parse(fs.readFileSync(canonicalStatePath(directSessionId), "utf8")) as {
-      sessionMode?: string;
-      messages: Array<{ content?: unknown }>;
-    };
-    const backgroundState = JSON.parse(
-      fs.readFileSync(canonicalStatePath(backgroundSessionId), "utf8"),
-    ) as {
-      sessionMode?: string;
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
       messages: Array<{ content?: unknown }>;
     };
 
-    expect(directState.sessionMode).toBe("direct-chat");
-    expect(backgroundState.sessionMode).toBe("background-subagent");
-    expect(canonicalCharCount(directState.messages)).toBeLessThan(
-      canonicalCharCount(backgroundState.messages),
-    );
+    expect(savedState.messages).toHaveLength(2);
+    expect(textOf(savedState.messages[0])).toContain("Please continue from the last result.");
+    expect(textOf(savedState.messages[1])).toContain("Please continue with the newest DM context.");
   });
 
-  it("collapses background-subagent completion residue more aggressively than direct-chat history", async () => {
+  it("preserves user-authored progress text even when background-subagent markers appear", async () => {
     const engine = createContextSafeContextEngine();
-    const directSessionId = "session-mode-direct-noisy";
-    const backgroundSessionId = "session-mode-background-strong";
+    const sessionId = "session-mode-background-preserve";
 
     await engine.assemble({
-      sessionId: directSessionId,
+      sessionId,
       messages: [
-        telegramDirectChatMetadataMessage(),
-        { role: "user", content: "Please continue from the last result." },
-      ],
-      tokenBudget: 512,
-    });
-    await engine.assemble({
-      sessionId: backgroundSessionId,
-      messages: [
-        backgroundProgressChatterMessage("status: still working"),
-        backgroundProgressChatterMessage("debug progress"),
-        backgroundProgressChatterMessage("running verification"),
-        backgroundCompletionResidueMessage(
-          "background-worker-1",
-          "reports/context-safe-background-worker-1-2026-03-24/index.md",
-        ),
-        backgroundCompletionResidueMessage(
-          "background-worker-2",
-          "reports/context-safe-background-worker-2-2026-03-24/index.md",
-        ),
         backgroundCompletionResidueMessage(
           "background-worker-final",
           "reports/context-safe-background-worker-final-2026-03-24/index.md",
         ),
+        { role: "user", content: "Status: still working, but keep going." },
+        { role: "user", content: "Running verification on the last failing case." },
       ],
       tokenBudget: 512,
     });
 
-    const directState = JSON.parse(fs.readFileSync(canonicalStatePath(directSessionId), "utf8")) as {
-      sessionMode?: string;
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
       messages: Array<{ content?: unknown }>;
     };
-    const backgroundState = JSON.parse(
-      fs.readFileSync(canonicalStatePath(backgroundSessionId), "utf8"),
-    ) as {
-      sessionMode?: string;
-      messages: Array<{ content?: unknown }>;
-    };
+    const transcript = savedState.messages.map((message) => textOf(message)).join("\n");
 
-    expect(directState.sessionMode).toBe("direct-chat");
-    expect(backgroundState.sessionMode).toBe("background-subagent");
-    expect(backgroundState.messages.length).toBeLessThan(directState.messages.length);
-    expect(canonicalCharCount(backgroundState.messages)).toBeLessThan(
-      canonicalCharCount(directState.messages),
-    );
+    expect(transcript).toContain("Child task completion (success): background-worker-final");
+    expect(transcript).toContain("Status: still working, but keep going.");
+    expect(transcript).toContain("Running verification on the last failing case.");
   });
 
-  it("collapses acp-run progress chatter while preserving the final verdict and report path", async () => {
+  it("preserves user-authored progress text even when acp-run headers appear", async () => {
     const engine = createContextSafeContextEngine();
-    const sessionId = "session-mode-acp-run";
+    const sessionId = "session-mode-acp-run-preserve";
 
     await engine.assemble({
       sessionId,
       messages: [
         acpRunHeaderMessage(),
-        acpRunProgressChatterMessage("status: still working"),
-        acpRunProgressChatterMessage("debug progress"),
+        { role: "user", content: "Debug progress: the reproduction is isolated now." },
+        { role: "user", content: "Running verification against the gateway transcript." },
         reportAwareSummaryMessage(),
       ],
       tokenBudget: 512,
     });
 
     const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
-      sessionMode?: string;
       messages: Array<{ content?: unknown }>;
     };
-    const transcript = savedState.messages.map((message) => textOf(message)).join("\\n");
+    const transcript = savedState.messages.map((message) => textOf(message)).join("\n");
 
-    expect(savedState.sessionMode).toBe("acp-run");
+    expect(transcript).toContain("Debug progress: the reproduction is isolated now.");
+    expect(transcript).toContain("Running verification against the gateway transcript.");
     expect(transcript).toContain("Verdict: pass");
     expect(transcript).toContain("reports/context-safe-v2-canonical-policy-2026-03-24/index.md");
-    expect(transcript).not.toContain("status: still working");
-    expect(transcript).not.toContain("debug progress");
   });
 
   it("leaves non-matching messages unchanged when syncing canonical state", async () => {
@@ -1106,7 +1055,7 @@ function acpRunProgressChatterMessage(text: string) {
   };
 }
 
-function telegramDirectChatMetadataMessage() {
+function telegramDirectChatMetadataMessage(userText = "Please continue from the last result.") {
   return {
     role: "user",
     content: [
@@ -1117,7 +1066,7 @@ function telegramDirectChatMetadataMessage() {
           '{"channel":"telegram","chat_type":"direct","chat_id":"440811495","thread_id":"dm"}',
           "Sender (untrusted metadata)",
           '{"id":"440811495","display_name":"编程菜菜","username":"programcaicai"}',
-          "Please continue from the last result.",
+          userText,
         ].join("\n"),
       },
     ],
