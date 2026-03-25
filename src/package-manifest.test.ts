@@ -44,6 +44,17 @@ describe("package manifest", () => {
     expect(linkDryRun).not.toContain("$ npm pack --json --pack-destination");
   });
 
+  it("publishes every runtime-imported source file needed by src/context-engine.ts", () => {
+    const packageJson = readPackageJson();
+    const contextEngineSource = fs.readFileSync(path.join(repoRoot, "src", "context-engine.ts"), "utf8");
+    const runtimeImports = Array.from(
+      contextEngineSource.matchAll(/from "(\.\/[^"]+\.js)";/g),
+      ([, specifier]) => path.posix.join("src", specifier.replace(/^\.\//, "").replace(/\.js$/, ".ts")),
+    );
+
+    expect(packageJson.files).toEqual(expect.arrayContaining(runtimeImports));
+  });
+
   it("declares the prune and runtime-churn config schema in openclaw.plugin.json", () => {
     const manifest = JSON.parse(
       fs.readFileSync(path.join(repoRoot, "openclaw.plugin.json"), "utf8"),
