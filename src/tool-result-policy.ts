@@ -29,6 +29,10 @@ const PROTECTED_READ_BASENAMES = new Set([
   "tools.md",
   "user.md",
 ]);
+const READ_TOOL_RESULT_BUDGET_MULTIPLIER = 1.2;
+const WEB_FETCH_TOOL_RESULT_BUDGET_MULTIPLIER = 0.8;
+const SHELL_TOOL_RESULT_BUDGET_MULTIPLIER = 0.65;
+const EXTERNALIZED_TOOL_RESULT_BUDGET_MULTIPLIER = 0.5;
 
 export type ContextSafeMessage = {
   role?: string;
@@ -149,12 +153,7 @@ export function applyContextToolResultPolicy(params: {
   messages: ContextSafeMessage[];
   contextWindowTokens: number;
 }): { messages: ContextSafeMessage[]; estimatedChars: number } {
-  const contextBudgetChars = Math.max(
-    MIN_CONTEXT_BUDGET_CHARS,
-    Math.floor(
-      params.contextWindowTokens * CHARS_PER_TOKEN_ESTIMATE * CONTEXT_INPUT_HEADROOM_RATIO,
-    ),
-  );
+  const contextBudgetChars = resolveContextBudgetChars(params.contextWindowTokens);
   const maxSingleToolResultChars = Math.max(
     MIN_SINGLE_TOOL_RESULT_CHARS,
     Math.floor(
@@ -171,7 +170,10 @@ export function applyContextToolResultPolicy(params: {
     if (!isToolResultMessage(message)) {
       continue;
     }
-    messages[i] = truncateToolResultToChars(message, maxSingleToolResultChars);
+    messages[i] = truncateToolResultToChars(
+      message,
+      resolveToolResultBudgetChars(message, maxSingleToolResultChars),
+    );
   }
 
   let estimatedChars = estimateContextChars(messages);
@@ -179,8 +181,12 @@ export function applyContextToolResultPolicy(params: {
     return { messages, estimatedChars };
   }
 
-  for (let i = 0; i < messages.length && estimatedChars > contextBudgetChars; i++) {
-    const message = messages[i];
+  for (const candidateIndex of rankCompactionCandidates(messages)) {
+    if (estimatedChars <= contextBudgetChars) {
+      break;
+    }
+
+    const message = messages[candidateIndex];
     if (!isToolResultMessage(message)) {
       continue;
     }
@@ -198,7 +204,7 @@ export function applyContextToolResultPolicy(params: {
     if (after >= before) {
       continue;
     }
-    messages[i] = compacted;
+    messages[candidateIndex] = compacted;
     estimatedChars -= before - after;
   }
 
@@ -206,6 +212,13 @@ export function applyContextToolResultPolicy(params: {
     messages,
     estimatedChars: estimateContextChars(messages),
   };
+}
+
+export function resolveContextBudgetChars(contextWindowTokens: number): number {
+  return Math.max(
+    MIN_CONTEXT_BUDGET_CHARS,
+    Math.floor(contextWindowTokens * CHARS_PER_TOKEN_ESTIMATE * CONTEXT_INPUT_HEADROOM_RATIO),
+  );
 }
 
 function isToolResultMessage(message: ContextSafeMessage): boolean {
@@ -482,15 +495,27 @@ function shortenContextToken(value: string, maxChars: number): string {
 function getToolResultMeta(message: ContextSafeMessage): {
   toolName?: string;
   toolCallId?: string;
+  resultMode?: "artifact" | "inline" | "inline-fallback";
 } {
   const toolNameRaw = asTrimmedString(message.toolName) ?? asTrimmedString(message.tool_name);
   const toolCallIdRaw =
     asTrimmedString(message.toolCallId) ?? asTrimmedString(message.tool_call_id);
+  const contextSafeMeta =
+    isRecord(message.details) && isRecord(message.details.contextSafe)
+      ? message.details.contextSafe
+      : undefined;
+  const resultMode =
+    contextSafeMeta?.resultMode === "artifact" ||
+    contextSafeMeta?.resultMode === "inline" ||
+    contextSafeMeta?.resultMode === "inline-fallback"
+      ? contextSafeMeta.resultMode
+      : undefined;
   return {
     toolName: toolNameRaw ? shortenContextToken(toolNameRaw.replace(/\s+/g, " "), 32) : undefined,
     toolCallId: toolCallIdRaw
       ? shortenContextToken(toolCallIdRaw.replace(/\s+/g, " "), 24)
       : undefined,
+    resultMode,
   };
 }
 
@@ -673,4 +698,57 @@ function truncateToolResultToChars(
     message,
     truncateTextToBudget(rawText, maxChars, `\n${fittedNotice}`),
   );
+}
+
+function resolveToolResultBudgetChars(message: ContextSafeMessage, baseBudgetChars: number): number {
+  const meta = getToolResultMeta(message);
+  const toolName = meta.toolName?.toLowerCase();
+  let multiplier = 1;
+
+  if (meta.resultMode === "artifact" || meta.resultMode === "inline-fallback") {
+    multiplier = EXTERNALIZED_TOOL_RESULT_BUDGET_MULTIPLIER;
+  } else if (toolName === "read") {
+    multiplier = READ_TOOL_RESULT_BUDGET_MULTIPLIER;
+  } else if (toolName === "web_fetch") {
+    multiplier = WEB_FETCH_TOOL_RESULT_BUDGET_MULTIPLIER;
+  } else if (toolName === "exec" || toolName === "bash") {
+    multiplier = SHELL_TOOL_RESULT_BUDGET_MULTIPLIER;
+  }
+
+  return Math.max(MIN_SINGLE_TOOL_RESULT_CHARS, Math.floor(baseBudgetChars * multiplier));
+}
+
+function rankCompactionCandidates(messages: ContextSafeMessage[]): number[] {
+  return messages
+    .map((message, index) => ({
+      index,
+      priority: isToolResultMessage(message) ? resolveCompactionPriority(message) : Number.NEGATIVE_INFINITY,
+    }))
+    .filter((entry) => entry.priority > Number.NEGATIVE_INFINITY)
+    .sort((left, right) => {
+      if (right.priority !== left.priority) {
+        return right.priority - left.priority;
+      }
+      return left.index - right.index;
+    })
+    .map((entry) => entry.index);
+}
+
+function resolveCompactionPriority(message: ContextSafeMessage): number {
+  const meta = getToolResultMeta(message);
+  const toolName = meta.toolName?.toLowerCase();
+
+  if (meta.resultMode === "artifact" || meta.resultMode === "inline-fallback") {
+    return 4;
+  }
+  if (toolName === "exec" || toolName === "bash") {
+    return 3;
+  }
+  if (toolName === "web_fetch") {
+    return 2;
+  }
+  if (toolName === "read") {
+    return 0;
+  }
+  return 1;
 }

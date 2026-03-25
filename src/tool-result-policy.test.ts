@@ -81,6 +81,52 @@ describe("applyContextToolResultPolicy", () => {
     expect(textOf(result.messages[3])).not.toContain(PREEMPTIVE_TOOL_RESULT_COMPACTION_PLACEHOLDER);
   });
 
+  it("preserves read results ahead of exec results when aggregate context is tight", () => {
+    const result = applyContextToolResultPolicy({
+      messages: [
+        userMessage("compare the file read and command output"),
+        toolResult({ toolName: "read", text: "r".repeat(90) }),
+        assistantMessage("working"),
+        toolResult({ toolName: "exec", text: "e".repeat(90) }),
+      ],
+      contextWindowTokens: 36,
+    });
+
+    expect(textOf(result.messages[1])).not.toContain(PREEMPTIVE_TOOL_RESULT_COMPACTION_PLACEHOLDER);
+    expect(textOf(result.messages[3])).toContain(PREEMPTIVE_TOOL_RESULT_COMPACTION_PLACEHOLDER);
+  });
+
+  it("compacts already externalized fallback results before inline read results", () => {
+    const result = applyContextToolResultPolicy({
+      messages: [
+        userMessage("keep the file read visible"),
+        toolResult({
+          toolName: "read",
+          text: "r".repeat(90),
+          details: {
+            contextSafe: {
+              resultMode: "inline",
+            },
+          },
+        }),
+        assistantMessage("working"),
+        toolResult({
+          toolName: "exec",
+          text: "e".repeat(90),
+          details: {
+            contextSafe: {
+              resultMode: "inline-fallback",
+            },
+          },
+        }),
+      ],
+      contextWindowTokens: 36,
+    });
+
+    expect(textOf(result.messages[1])).not.toContain(PREEMPTIVE_TOOL_RESULT_COMPACTION_PLACEHOLDER);
+    expect(textOf(result.messages[3])).toContain(PREEMPTIVE_TOOL_RESULT_COMPACTION_PLACEHOLDER);
+  });
+
   it("keeps non-tool messages unchanged", () => {
     const messages = [userMessage("hi"), assistantMessage("hello")];
 

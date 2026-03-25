@@ -20,9 +20,15 @@ import {
 } from "./runtime-churn-policy.js";
 import { normalizeReportAwareMessages } from "./report-aware-policy.js";
 import {
+  buildContextSafeSessionIndex,
+  buildContextSafeSessionIndexMessage,
+} from "./session-index.js";
+import { summarizeContextSafeSessionStats } from "./session-observability.js";
+import {
   applyCanonicalPrune,
   applyContextToolResultPolicy,
   type ContextSafeMessage,
+  resolveContextBudgetChars,
 } from "./tool-result-policy.js";
 
 type ContextSafeLogger = {
@@ -95,9 +101,15 @@ export function createContextSafeContextEngine(input?: {
         await persistCanonicalState(canonicalState, logger);
       }
 
-      const result = applyContextToolResultPolicy({
+      const contextWindowTokens = Math.max(1, Math.floor(params.tokenBudget ?? 0));
+      const baseResult = applyContextToolResultPolicy({
         messages: canonicalState.messages,
-        contextWindowTokens: Math.max(1, Math.floor(params.tokenBudget ?? 0)),
+        contextWindowTokens,
+      });
+      const result = injectSessionIndexMessage({
+        baseResult,
+        sessionIndex: canonicalState.contextSafeSessionIndex,
+        contextWindowTokens,
       });
       return {
         messages: result.messages,
@@ -166,6 +178,17 @@ export function createContextSafeContextEngine(input?: {
           thresholdChars: params.force ? 1 : config.prune.thresholdChars,
         }),
         runtimeChurnMetadata: readRuntimeChurnMetadata(canonicalState),
+        contextSafeSessionIndex: buildContextSafeSessionIndex({
+          messages: pruned.messages,
+        }),
+        contextSafeStats: summarizeContextSafeSessionStats({
+          messages: pruned.messages,
+          previous: canonicalState.contextSafeStats,
+          pruneEvent: {
+            source: "compact",
+            pruneGain: pruned.pruneGain,
+          },
+        }),
       });
       changed = true;
 
@@ -222,6 +245,13 @@ async function synchronizeCanonicalState(params: {
         configSnapshot: params.pruneConfig,
         messages: normalized.messages,
         runtimeChurnMetadata: mergeRuntimeChurnMetadata(undefined, normalized.runtimeChurn),
+        contextSafeSessionIndex: buildContextSafeSessionIndex({
+          messages: normalized.messages,
+        }),
+        contextSafeStats: summarizeContextSafeSessionStats({
+          messages: normalized.messages,
+          previous: loaded.state?.contextSafeStats,
+        }),
       }),
       changed: true,
     };
@@ -256,6 +286,10 @@ async function synchronizeCanonicalState(params: {
     changed = true;
   }
 
+  if (!loaded.state.contextSafeSessionIndex || !loaded.state.contextSafeStats) {
+    changed = true;
+  }
+
   return {
     state: createCanonicalSessionState({
       sessionId: loaded.state.sessionId,
@@ -265,6 +299,13 @@ async function synchronizeCanonicalState(params: {
       messages,
       pruneMetadata: readPruneMetadata(loaded.state),
       runtimeChurnMetadata,
+      contextSafeSessionIndex: buildContextSafeSessionIndex({
+        messages,
+      }),
+      contextSafeStats: summarizeContextSafeSessionStats({
+        messages,
+        previous: loaded.state.contextSafeStats,
+      }),
     }),
     changed,
   };
@@ -469,9 +510,83 @@ function maybePruneCanonicalState(params: {
         thresholdChars: params.pruneConfig.thresholdChars,
       }),
       runtimeChurnMetadata: readRuntimeChurnMetadata(params.state),
+      contextSafeSessionIndex: buildContextSafeSessionIndex({
+        messages: pruned.messages,
+      }),
+      contextSafeStats: summarizeContextSafeSessionStats({
+        messages: pruned.messages,
+        previous: params.state.contextSafeStats,
+        pruneEvent: {
+          source: params.source,
+          pruneGain: pruned.pruneGain,
+        },
+      }),
     }),
     changed: true,
   };
+}
+
+function injectSessionIndexMessage(params: {
+  baseResult: { messages: ContextSafeMessage[]; estimatedChars: number };
+  sessionIndex?: CanonicalSessionState["contextSafeSessionIndex"];
+  contextWindowTokens: number;
+}): { messages: ContextSafeMessage[]; estimatedChars: number } {
+  if (
+    !params.sessionIndex ||
+    params.contextWindowTokens <= 24 ||
+    !hasInjectableSessionIndexSignal(params.sessionIndex)
+  ) {
+    return params.baseResult;
+  }
+
+  const summary = buildContextSafeSessionIndexMessage({
+    index: params.sessionIndex,
+    maxChars: resolveSessionIndexBudgetChars(params.contextWindowTokens),
+  });
+  if (!summary) {
+    return params.baseResult;
+  }
+
+  const summaryChars = estimateSyntheticMessageChars(summary);
+  if (params.baseResult.estimatedChars + summaryChars > resolveContextBudgetChars(params.contextWindowTokens)) {
+    return params.baseResult;
+  }
+
+  return applyContextToolResultPolicy({
+    messages: [summary, ...params.baseResult.messages],
+    contextWindowTokens: params.contextWindowTokens,
+  });
+}
+
+function resolveSessionIndexBudgetChars(contextWindowTokens: number): number {
+  return Math.min(900, Math.max(180, Math.floor(contextWindowTokens * 4 * 0.18)));
+}
+
+function hasInjectableSessionIndexSignal(
+  index: NonNullable<CanonicalSessionState["contextSafeSessionIndex"]>,
+): boolean {
+  return (
+    index.recentConclusions.length > 0 ||
+    index.openThreads.length > 0 ||
+    index.keyArtifacts.length > 0
+  );
+}
+
+function estimateSyntheticMessageChars(message: ContextSafeMessage): number {
+  const content = message.content;
+  if (typeof content === "string") {
+    return content.length;
+  }
+  if (!Array.isArray(content)) {
+    return 0;
+  }
+  return content
+    .filter(
+      (block) =>
+        !!block && typeof block === "object" && (block as { type?: unknown }).type === "text",
+    )
+    .map((block) => String((block as { text?: unknown }).text ?? ""))
+    .join("\n").length;
 }
 
 function createPruneMetadata(params: {
