@@ -38,7 +38,8 @@
   "scripts": {
     "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "install:plugin": "python3 scripts/install.py"
+    "install:plugin": "python3 scripts/install.py",
+    "install:plugin:link": "python3 scripts/install.py --link"
   },
   "engines": {
     "node": ">=22"
