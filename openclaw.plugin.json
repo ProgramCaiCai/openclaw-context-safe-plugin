@@ -3,7 +3,7 @@
   "name": "Context Safe",
   "description": "Tool-result context safety plugin.",
   "kind": "context-engine",
-  "version": "0.4.2",
+  "version": "0.4.5",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
