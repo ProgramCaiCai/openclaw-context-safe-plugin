@@ -375,6 +375,63 @@ describe("createContextSafeContextEngine", () => {
     expect(info).toHaveBeenCalledWith(expect.stringContaining("source=compact"));
   });
 
+  it("moves the compact preserved-tail boundary backward so it does not start with an orphan tool result", async () => {
+    const engine = createContextSafeContextEngine({
+      prune: {
+        thresholdChars: 1,
+        keepRecentToolResults: 1,
+        placeholder: "[pruned]",
+      },
+    });
+    const sessionId = "session-compact-api-invariants";
+    const sessionFile = path.join(artifactDir, "manual-compact-api-invariants.jsonl");
+    writeTranscript(sessionFile, [
+      { role: "user", content: "summarize the run" },
+      {
+        role: "assistant",
+        id: "assistant-legacy-thinking",
+        content: [{ type: "thinking", thinking: "t".repeat(30_000) }],
+      },
+      {
+        role: "assistant",
+        id: "assistant-call-1",
+        content: [
+          {
+            type: "tool_use",
+            name: "read",
+            id: "call-1",
+            input: { path: "/tmp/plan.md" },
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        id: "tool-result-call-1",
+        toolName: "read",
+        toolCallId: "call-1",
+        content: [{ type: "text", text: "recent tool result" }],
+      },
+    ]);
+
+    const compactResult = await engine.compact({
+      sessionId,
+      sessionFile,
+      tokenBudget: 30_000,
+      force: true,
+    });
+
+    expect(compactResult.ok).toBe(true);
+    expect(compactResult.compacted).toBe(true);
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      summaryBoundary?: {
+        preservedTailHeadId?: string;
+      };
+    };
+
+    expect(savedState.summaryBoundary?.preservedTailHeadId).toBe("assistant-call-1");
+  });
+
   it("skips manual compact when the canonical transcript has nothing worth pruning", async () => {
     const engine = createContextSafeContextEngine();
     const sessionFile = path.join(artifactDir, "manual-compact-skip.jsonl");

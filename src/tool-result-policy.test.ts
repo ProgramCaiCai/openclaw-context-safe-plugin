@@ -571,6 +571,63 @@ describe("prune threshold gating", () => {
     expect(textOf(result.messages[2])).toContain("Child task completion (success)");
   });
 
+  it("pulls the preserved-tail start backward to include matching tool_use blocks", () => {
+    const start = policy.calculatePreservedTailStart({
+      messages: [
+        userMessage("head"),
+        {
+          id: "assistant-tool-use",
+          ...assistantToolUse("read", "call-1", { path: "/tmp/notes.md" }),
+        },
+        {
+          id: "tool-result-1",
+          ...toolResult({
+            toolName: "read",
+            toolCallId: "call-1",
+            text: "recent read result",
+          }),
+        },
+        assistantMessage("done"),
+      ],
+      keepRecentToolResults: 2,
+    });
+
+    expect(start).toBe(1);
+  });
+
+  it("pulls the preserved-tail start backward to include assistant fragments sharing message.id", () => {
+    const start = policy.calculatePreservedTailStart({
+      messages: [
+        userMessage("head"),
+        {
+          role: "assistant",
+          id: "assistant-msg-1",
+          content: [{ type: "thinking", thinking: "private scratchpad" }],
+        },
+        {
+          role: "assistant",
+          id: "assistant-msg-1",
+          content: [
+            {
+              type: "tool_use",
+              name: "read",
+              id: "call-2",
+              input: { path: "/tmp/plan.md" },
+            },
+          ],
+        },
+        toolResult({
+          toolName: "read",
+          toolCallId: "call-2",
+          text: "recent read result",
+        }),
+      ],
+      keepRecentToolResults: 2,
+    });
+
+    expect(start).toBe(1);
+  });
+
   it("treats normalized Telegram metadata wrappers like ordinary small user text", () => {
     const plainGain = policy.estimatePruneGain({
       messages: [

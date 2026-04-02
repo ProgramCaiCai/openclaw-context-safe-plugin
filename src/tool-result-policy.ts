@@ -1,3 +1,5 @@
+import { preserveApiInvariants } from "./api-invariants.js";
+import { type CanonicalSessionSummaryBoundary } from "./canonical-session-state.js";
 import {
   DEFAULT_RETENTION_TIER_COMPRESSIBLE,
   DEFAULT_RETENTION_TIER_CRITICAL,
@@ -43,6 +45,10 @@ export type ContextSafeMessage = {
   tool_name?: string;
   toolCallId?: string;
   tool_call_id?: string;
+  id?: string;
+  messageId?: string;
+  message_id?: string;
+  message?: unknown;
   [key: string]: unknown;
 };
 
@@ -86,8 +92,13 @@ export function estimatePruneGain(params: {
   thresholdChars: number;
   keepRecentToolResults: number;
   placeholder: string;
+  summaryBoundary?: CanonicalSessionSummaryBoundary;
 }): number {
-  const protectedIndexes = findProtectedMessageIndexes(params.messages, params.keepRecentToolResults);
+  const protectedIndexes = findProtectedMessageIndexes(
+    params.messages,
+    params.keepRecentToolResults,
+    params.summaryBoundary,
+  );
   let gain = 0;
 
   for (let i = 0; i < params.messages.length; i++) {
@@ -114,10 +125,12 @@ export function applyCanonicalPrune(params: {
   thresholdChars: number;
   keepRecentToolResults: number;
   placeholder: string;
+  summaryBoundary?: CanonicalSessionSummaryBoundary;
 }): {
   messages: ContextSafeMessage[];
   pruneGain: number;
   pruned: boolean;
+  preservedTailStart?: number;
 } {
   const pruneGain = estimatePruneGain(params);
   if (pruneGain < params.thresholdChars) {
@@ -125,10 +138,24 @@ export function applyCanonicalPrune(params: {
       messages: params.messages,
       pruneGain,
       pruned: false,
+      preservedTailStart: calculatePreservedTailStart({
+        messages: params.messages,
+        keepRecentToolResults: params.keepRecentToolResults,
+        summaryBoundary: params.summaryBoundary,
+      }),
     };
   }
 
-  const protectedIndexes = findProtectedMessageIndexes(params.messages, params.keepRecentToolResults);
+  const preservedTailStart = calculatePreservedTailStart({
+    messages: params.messages,
+    keepRecentToolResults: params.keepRecentToolResults,
+    summaryBoundary: params.summaryBoundary,
+  });
+  const protectedIndexes = findProtectedMessageIndexes(
+    params.messages,
+    params.keepRecentToolResults,
+    params.summaryBoundary,
+  );
   const messages = params.messages.map((message, index) => {
     if (protectedIndexes.has(index)) {
       return message;
@@ -146,7 +173,28 @@ export function applyCanonicalPrune(params: {
     messages,
     pruneGain,
     pruned: true,
+    preservedTailStart,
   };
+}
+
+export function calculatePreservedTailStart(params: {
+  messages: ContextSafeMessage[];
+  keepRecentToolResults: number;
+  summaryBoundary?: CanonicalSessionSummaryBoundary;
+}): number | undefined {
+  if (params.messages.length === 0 || params.keepRecentToolResults <= 0) {
+    return undefined;
+  }
+
+  let startIndex = Math.max(0, params.messages.length - Math.max(0, params.keepRecentToolResults));
+  const summaryBoundaryFloor = findSummaryBoundaryFloorIndex(
+    params.messages,
+    params.summaryBoundary,
+  );
+  if (summaryBoundaryFloor !== undefined) {
+    startIndex = Math.min(startIndex, summaryBoundaryFloor);
+  }
+  return preserveApiInvariants(params.messages, startIndex);
 }
 
 export function applyContextToolResultPolicy(params: {
@@ -225,20 +273,30 @@ function isToolResultMessage(message: ContextSafeMessage): boolean {
   return message.role === "toolResult" || message.role === "tool" || message.type === "toolResult";
 }
 
-function findProtectedMessageIndexes(messages: ContextSafeMessage[], protectedWindowSize: number): Set<number> {
+function findProtectedMessageIndexes(
+  messages: ContextSafeMessage[],
+  protectedWindowSize: number,
+  summaryBoundary?: CanonicalSessionSummaryBoundary,
+): Set<number> {
   const protectedIndexes = new Set<number>();
   const protectedToolCallIds = new Set<string>();
   const windowSize = Math.max(0, protectedWindowSize);
   const headStop = Math.min(messages.length, windowSize);
-  const tailStart = Math.max(0, messages.length - windowSize);
+  const tailStart = calculatePreservedTailStart({
+    messages,
+    keepRecentToolResults: protectedWindowSize,
+    summaryBoundary,
+  });
 
   for (let i = 0; i < headStop; i++) {
     protectedIndexes.add(i);
     addProtectedToolCallIds(protectedToolCallIds, messages[i]);
   }
-  for (let i = tailStart; i < messages.length; i++) {
-    protectedIndexes.add(i);
-    addProtectedToolCallIds(protectedToolCallIds, messages[i]);
+  if (tailStart !== undefined) {
+    for (let i = tailStart; i < messages.length; i++) {
+      protectedIndexes.add(i);
+      addProtectedToolCallIds(protectedToolCallIds, messages[i]);
+    }
   }
 
   for (let i = 0; i < messages.length; i++) {
@@ -252,6 +310,19 @@ function findProtectedMessageIndexes(messages: ContextSafeMessage[], protectedWi
   for (let i = 0; i < messages.length; i++) {
     const toolCallId = getMessageToolCallId(messages[i]);
     if (toolCallId && protectedToolCallIds.has(toolCallId) && isToolResultMessage(messages[i])) {
+      protectedIndexes.add(i);
+      continue;
+    }
+    if (protectedIndexes.has(i) || !Array.isArray(messages[i].content)) {
+      continue;
+    }
+    const hasProtectedToolUse = messages[i].content.some(
+      (block) =>
+        isRecord(block) &&
+        block.type === "tool_use" &&
+        protectedToolCallIds.has(asTrimmedString(block.id) ?? ""),
+    );
+    if (hasProtectedToolUse) {
       protectedIndexes.add(i);
     }
   }
@@ -381,6 +452,34 @@ function getToolCallIdFromValue(value: unknown): string | undefined {
     asTrimmedString(value.toolCallId) ??
     asTrimmedString(value.tool_call_id) ??
     asTrimmedString(value.id)
+  );
+}
+
+function findSummaryBoundaryFloorIndex(
+  messages: ContextSafeMessage[],
+  summaryBoundary?: CanonicalSessionSummaryBoundary,
+): number | undefined {
+  if (
+    summaryBoundary?.lastSummarySource !== "compact" &&
+    summaryBoundary?.lastSummarySource !== "manual"
+  ) {
+    return undefined;
+  }
+  const headId = asTrimmedString(summaryBoundary?.preservedTailHeadId);
+  if (!headId) {
+    return undefined;
+  }
+  const index = messages.findIndex((message) => resolveContextSafeMessageId(message) === headId);
+  return index >= 0 ? index : undefined;
+}
+
+function resolveContextSafeMessageId(message: ContextSafeMessage): string | undefined {
+  return (
+    asTrimmedString(message.id) ??
+    asTrimmedString(message.messageId) ??
+    asTrimmedString(message.message_id) ??
+    getMessageToolCallId(message) ??
+    (isRecord(message.message) ? asTrimmedString(message.message.id) : undefined)
   );
 }
 

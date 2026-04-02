@@ -148,6 +148,7 @@ export function createContextSafeContextEngine(input?: {
         thresholdChars: params.force ? 1 : config.prune.thresholdChars,
         keepRecentToolResults: config.prune.keepRecentToolResults,
         placeholder: config.prune.placeholder,
+        summaryBoundary: readSummaryBoundary(canonicalState),
       });
 
       if (!pruned.pruned) {
@@ -185,6 +186,7 @@ export function createContextSafeContextEngine(input?: {
           messages: pruned.messages,
           keepRecentToolResults: config.prune.keepRecentToolResults,
           source: "compact",
+          preservedTailStart: pruned.preservedTailStart,
         }),
         contextSafeSessionIndex: buildContextSafeSessionIndex({
           messages: pruned.messages,
@@ -499,6 +501,7 @@ function maybePruneCanonicalState(params: {
   const pruned = applyCanonicalPrune({
     messages: params.state.messages,
     ...params.pruneConfig,
+    summaryBoundary: readSummaryBoundary(params.state),
   });
   if (!pruned.pruned) {
     return { state: params.state, changed: false };
@@ -529,6 +532,7 @@ function maybePruneCanonicalState(params: {
         messages: pruned.messages,
         keepRecentToolResults: params.pruneConfig.keepRecentToolResults,
         source: params.source,
+        preservedTailStart: pruned.preservedTailStart,
       }),
       contextSafeSessionIndex: buildContextSafeSessionIndex({
         messages: pruned.messages,
@@ -627,6 +631,7 @@ function buildSummaryBoundary(params: {
   messages: ContextSafeMessage[];
   keepRecentToolResults: number;
   source: "assemble" | "compact";
+  preservedTailStart?: number;
 }): CanonicalSessionSummaryBoundary {
   const now = new Date().toISOString();
   const boundary: CanonicalSessionSummaryBoundary = {
@@ -634,10 +639,9 @@ function buildSummaryBoundary(params: {
     lastSummarizedAt: now,
     lastSummarySource: params.source,
   };
-  const preservedTailStart = resolveFixedPreservedTailStartIndex(
-    params.messages,
-    params.keepRecentToolResults,
-  );
+  const preservedTailStart =
+    params.preservedTailStart ??
+    resolveFixedPreservedTailStartIndex(params.messages, params.keepRecentToolResults);
   if (preservedTailStart === undefined) {
     return boundary;
   }
