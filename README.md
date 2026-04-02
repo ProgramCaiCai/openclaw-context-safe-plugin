@@ -32,14 +32,39 @@ runtime churn slimming 发生在消息已经进入 transcript 之后的 canonica
 当前裁剪规则：
 
 - `pruneGain` 只统计可被裁剪的消息，受保护内容不计入
-- 保护会话最开头 5 条和最后 5 条消息
-- 保护这些窗口内关联的 `toolResult`
+- 不再使用固定 head/tail 窗口，改为从 transcript 尾部向前扩展一个语义化 preserved tail
+- preserved tail 默认要同时满足最小字符预算和最小 user/assistant 文本轮次数，并受 `keepTailMaxChars` 上限约束
+- 如果 canonical state 已经记录 `summaryBoundary.preservedTailHeadId`，tail 选择会尊重这个边界，不会把切点推进到边界之后
+- tail 切点会额外执行 API invariant 修正，避免保留段从孤立的 `toolResult` 开始，也避免丢掉共享同一 `message.id` 的 assistant fragment
 - 保护命中 basename 名单的 `read` 消息及其关联 `toolResult`
 - 保护名单按 basename、大小写不敏感匹配：
   `AGENTS.md` `HEARTBEAT.md` `IDENTITY.md` `MEMORY.md` `NOW.md`
   `SESSION-STATE.md` `SKILL.md` `SOUL.md` `TODAY.md` `TOOLS.md` `USER.md`
 - 非保护区里的 assistant `thinking` / `reasoning` block 会被删除
 - 非保护区里的旧 `toolResult` 会被替换成 `[pruned]`，并移除 `details`
+
+### Summary Boundary 与 Rehydration Bundle
+
+canonical state 现在会额外保存一组 compact/rehydration 相关字段：
+
+- `summaryBoundary`
+  - `lastSummarizedMessageId`
+  - `lastSummarizedAt`
+  - `lastSummarySource`
+  - `preservedTailHeadId`
+- `contextSafeSessionIndex`
+  - `goals`
+  - `recentConclusions`
+  - `openThreads`
+  - `activePlans`
+  - `protectedReads`
+  - `recentReports`
+  - `keyArtifacts`
+  - `recoveryHints`
+  - `summaryBoundary`
+  - `lastCompactReason`
+
+`assemble()` 注入的 synthetic session index 也不再只有轻量 goals/threads/artifacts。预算足够时，它会把 active plans、protected reads、recent reports、summary boundary 和最近 compact 原因一起带回上下文；预算变紧时，会自动退化到 compact/minimal 版本，只保留最关键的继续工作线索。
 
 ### 它为什么能省 Token
 
@@ -157,6 +182,15 @@ canonical session state 也会保存在同一 artifact 根目录下：
 ~/.openclaw/artifacts/context-safe/session-state/<sessionId>.json
 ```
 
+如果需要排查某一轮 compact / assemble 为什么这样裁剪，优先看这个 session-state 文件里的：
+
+- `summaryBoundary`
+- `contextSafeSessionIndex`
+- `consecutiveCompactNoops`
+- `lastCompactReason`
+- `lastCompactFailedAt`
+- `contextSafeStats`
+
 ### Prune 配置
 
 默认配置：
@@ -166,6 +200,10 @@ canonical session state 也会保存在同一 artifact 根目录下：
   "prune": {
     "thresholdChars": 100000,
     "keepRecentToolResults": 5,
+    "keepTailMinChars": 6000,
+    "keepTailMinUserAssistantMessages": 2,
+    "keepTailMaxChars": 24000,
+    "keepTailRespectSummaryBoundary": true,
     "placeholder": "[pruned]"
   },
   "runtimeChurn": {
@@ -209,6 +247,10 @@ OpenClaw 配置示例：
 ```bash
 openclaw config set plugins.entries.context-safe.config.prune.thresholdChars 100000
 openclaw config set plugins.entries.context-safe.config.prune.keepRecentToolResults 5
+openclaw config set plugins.entries.context-safe.config.prune.keepTailMinChars 6000
+openclaw config set plugins.entries.context-safe.config.prune.keepTailMinUserAssistantMessages 2
+openclaw config set plugins.entries.context-safe.config.prune.keepTailMaxChars 24000
+openclaw config set plugins.entries.context-safe.config.prune.keepTailRespectSummaryBoundary true
 openclaw config set plugins.entries.context-safe.config.prune.placeholder "[pruned]"
 openclaw config set plugins.entries.context-safe.config.runtimeChurn.enabled true
 openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseCompactionSummaries true
@@ -227,6 +269,18 @@ canonical session state 会额外记录两组轻量观测字段：
 
 - `normalizedRuntimeChurnCount`：累计有多少条消息被 runtime churn slim 规则折叠过
 - `lastRuntimeChurnKinds`：最近一次命中的 churn 类型列表
+- `consecutiveCompactNoops` / `lastCompactReason` / `lastCompactFailedAt`：最近 compact 是否一直没有实质收益，和最近一次 compact/no-op 的原因
+
+### Compact No-op Circuit Breaker
+
+如果连续多次 `compact()` 都判断 canonical transcript 已经没有可压缩收益，插件会递增 `consecutiveCompactNoops`。达到阈值后，后续 compact 会直接返回 circuit-breaker reason，而不是继续重复做无意义 compact。
+
+排查建议：
+
+- 先查看 `~/.openclaw/artifacts/context-safe/session-state/<sessionId>.json`
+- 关注 `consecutiveCompactNoops`、`lastCompactReason`、`lastCompactFailedAt`
+- 如果原因是 `already minimal`，优先继续当前会话或等待更多新内容进入 canonical transcript，不要机械重复触发 compact
+- 如果你在调配置，优先检查 `thresholdChars` 与 semantic tail 参数是不是把可裁剪区保护得过大
 
 当某次同步真的发生折叠时，logger 会输出一条类似 `context-safe runtime-churn normalized=1 kinds=childCompletionInjection` 的信息。
 
@@ -237,6 +291,8 @@ pnpm exec vitest run --config vitest.config.ts
 pnpm exec tsc -p tsconfig.json --noEmit
 python3 -m py_compile scripts/install.py
 ```
+
+当前包没有单独的 `build` script。收尾验证时用全量 `pnpm test` 和 `pnpm exec tsc -p tsconfig.json --noEmit` 作为 TypeScript 侧的最终门禁。
 
 项目结构：
 

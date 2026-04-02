@@ -173,6 +173,9 @@ describe("context-safe plugin registration", () => {
         prune: {
           thresholdChars: 25_000,
           keepRecentToolResults: 2,
+          keepTailMinChars: 1,
+          keepTailMinUserAssistantMessages: 1,
+          keepTailMaxChars: 200,
           placeholder: "[pruned]",
         },
       },
@@ -253,8 +256,16 @@ describe("context-safe plugin registration", () => {
       ],
     });
 
-    expect(textOf(assembled.messages[2])).toBe("[pruned]");
-    expect(textOf(assembled.messages[4])).toBe("[pruned]");
+    expect(
+      assembled.messages
+        .filter((message) => message.role === "toolResult")
+        .map((message) => textOf(message)),
+    ).toEqual([
+      "[pruned]",
+      "[pruned]",
+      "recent tool result 1",
+      "recent tool result 2",
+    ]);
   });
 });
 
