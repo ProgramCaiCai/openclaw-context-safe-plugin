@@ -1,6 +1,6 @@
 {
   "name": "context-safe",
-  "version": "0.4.2",
+  "version": "0.4.6",
   "description": "Standalone context-safe plugin for OpenClaw.",
   "license": "MIT",
   "repository": {
