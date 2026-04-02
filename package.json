@@ -25,6 +25,7 @@
     "scripts/install.py",
     "openclaw.plugin.json",
     "README.md",
+    "src/api-invariants.ts",
     "src/artifact-dir.ts",
     "src/canonical-session-state.ts",
     "src/config.ts",

@@ -1,5 +1,9 @@
 export const DEFAULT_PRUNE_THRESHOLD_CHARS = 100_000;
 export const DEFAULT_KEEP_RECENT_TOOL_RESULTS = 5;
+export const DEFAULT_KEEP_TAIL_MIN_CHARS = 6_000;
+export const DEFAULT_KEEP_TAIL_MIN_USER_ASSISTANT_MESSAGES = 2;
+export const DEFAULT_KEEP_TAIL_MAX_CHARS = 24_000;
+export const DEFAULT_KEEP_TAIL_RESPECT_SUMMARY_BOUNDARY = true;
 export const DEFAULT_PRUNE_PLACEHOLDER = "[pruned]";
 export const DEFAULT_RUNTIME_CHURN_ENABLED = true;
 export const DEFAULT_COLLAPSE_COMPACTION_SUMMARIES = true;
@@ -45,6 +49,10 @@ export const DEFAULT_RETENTION_TIER_FOLD_FIRST = [
 export type ContextSafePruneConfig = {
   thresholdChars: number;
   keepRecentToolResults: number;
+  keepTailMinChars?: number;
+  keepTailMinUserAssistantMessages?: number;
+  keepTailMaxChars?: number;
+  keepTailRespectSummaryBoundary?: boolean;
   placeholder: string;
 };
 
@@ -90,6 +98,26 @@ export function normalizeContextSafeEngineConfig(input?: unknown): ContextSafeEn
         prune?.keepRecentToolResults,
         DEFAULT_KEEP_RECENT_TOOL_RESULTS,
         "prune.keepRecentToolResults",
+      ),
+      keepTailMinChars: readPositiveInteger(
+        prune?.keepTailMinChars,
+        DEFAULT_KEEP_TAIL_MIN_CHARS,
+        "prune.keepTailMinChars",
+      ),
+      keepTailMinUserAssistantMessages: readPositiveInteger(
+        prune?.keepTailMinUserAssistantMessages,
+        DEFAULT_KEEP_TAIL_MIN_USER_ASSISTANT_MESSAGES,
+        "prune.keepTailMinUserAssistantMessages",
+      ),
+      keepTailMaxChars: readPositiveInteger(
+        prune?.keepTailMaxChars,
+        DEFAULT_KEEP_TAIL_MAX_CHARS,
+        "prune.keepTailMaxChars",
+      ),
+      keepTailRespectSummaryBoundary: readBoolean(
+        prune?.keepTailRespectSummaryBoundary,
+        DEFAULT_KEEP_TAIL_RESPECT_SUMMARY_BOUNDARY,
+        "prune.keepTailRespectSummaryBoundary",
       ),
       placeholder: readNonEmptyString(
         prune?.placeholder,
@@ -156,6 +184,10 @@ export function samePruneConfig(
   return (
     left.thresholdChars === right.thresholdChars &&
     left.keepRecentToolResults === right.keepRecentToolResults &&
+    left.keepTailMinChars === right.keepTailMinChars &&
+    left.keepTailMinUserAssistantMessages === right.keepTailMinUserAssistantMessages &&
+    left.keepTailMaxChars === right.keepTailMaxChars &&
+    left.keepTailRespectSummaryBoundary === right.keepTailRespectSummaryBoundary &&
     left.placeholder === right.placeholder
   );
 }

@@ -147,6 +147,10 @@ export function createContextSafeContextEngine(input?: {
         messages: canonicalState.messages,
         thresholdChars: params.force ? 1 : config.prune.thresholdChars,
         keepRecentToolResults: config.prune.keepRecentToolResults,
+        keepTailMinChars: config.prune.keepTailMinChars,
+        keepTailMinUserAssistantMessages: config.prune.keepTailMinUserAssistantMessages,
+        keepTailMaxChars: config.prune.keepTailMaxChars,
+        keepTailRespectSummaryBoundary: config.prune.keepTailRespectSummaryBoundary,
         placeholder: config.prune.placeholder,
         summaryBoundary: readSummaryBoundary(canonicalState),
       });
@@ -630,7 +634,7 @@ function buildSummaryBoundary(params: {
   existing?: CanonicalSessionSummaryBoundary;
   messages: ContextSafeMessage[];
   keepRecentToolResults: number;
-  source: "assemble" | "compact";
+  source: "afterTurn" | "assemble" | "compact";
   preservedTailStart?: number;
 }): CanonicalSessionSummaryBoundary {
   const now = new Date().toISOString();

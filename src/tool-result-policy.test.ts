@@ -283,7 +283,7 @@ describe("prune threshold gating", () => {
       placeholder: "[pruned]",
     });
 
-    expect(countThinkingBlocks(result.messages)).toBe(1);
+    expect(countThinkingBlocks(result.messages)).toBe(0);
     expect(toolResultTexts(result.messages)).toEqual([
       "[pruned]",
       "[pruned]",
@@ -326,7 +326,7 @@ describe("prune threshold gating", () => {
     });
 
     expect(defaultResult.messages).toEqual(defaultMessages);
-    expect(countThinkingBlocks(customResult.messages)).toBe(1);
+    expect(countThinkingBlocks(customResult.messages)).toBe(0);
     expect(toolResultTexts(customResult.messages)).toEqual([
       "[pruned]",
       "[pruned]",
@@ -398,7 +398,7 @@ describe("prune threshold gating", () => {
       placeholder: "[pruned]",
     });
 
-    expect(countThinkingBlocks(result.messages)).toBe(1);
+    expect(countThinkingBlocks(result.messages)).toBe(0);
     expect(textOf(result.messages[1])).toBe("working");
     expect(textOf(result.messages[3])).toBe("");
     expect(toolResultTexts(result.messages)).toEqual([
@@ -409,7 +409,7 @@ describe("prune threshold gating", () => {
     ]);
   });
 
-  it("protects head and tail windows plus basename-matched read messages and linked tool results", () => {
+  it("drops fixed head protection while still preserving basename-matched read messages and linked tail tool results", () => {
     const messages = [
       userMessage("session start"),
       {
@@ -479,17 +479,15 @@ describe("prune threshold gating", () => {
     });
 
     expect(result.pruned).toBe(true);
-    expect(countThinkingBlocks(result.messages)).toBe(2);
-    expect(textOf(result.messages[2])).toBe("legacy result 1");
+    expect(countThinkingBlocks(result.messages)).toBe(1);
+    expect(textOf(result.messages[2])).toBe("[pruned]");
     expect(textOf(result.messages[5])).toBe("head protected read result");
     expect(textOf(result.messages[8])).toBe("middle protected read result");
     expect(textOf(result.messages[9])).toBe("[pruned]");
     expect(textOf(result.messages[10])).toBe("tail protected read result");
     expect(textOf(result.messages[13])).toBe("recent tool result 1");
     expect(textOf(result.messages[15])).toBe("recent tool result 2");
-    expect((result.messages[2] as { details?: unknown }).details).toEqual({
-      raw: "a".repeat(4_000),
-    });
+    expect((result.messages[2] as { details?: unknown }).details).toBeUndefined();
     expect((result.messages[5] as { details?: unknown }).details).toEqual({
       raw: "b".repeat(4_000),
     });
@@ -623,6 +621,66 @@ describe("prune threshold gating", () => {
         }),
       ],
       keepRecentToolResults: 2,
+    });
+
+    expect(start).toBe(1);
+  });
+
+  it("uses a semantic preserved-tail window so long tool-result bursts do not collapse to the last fixed messages", () => {
+    const start = policy.calculatePreservedTailStart({
+      messages: [
+        userMessage("Need the preserved tail to keep the latest request visible."),
+        assistantMessage("Working through the final verification."),
+        toolResult({ toolName: "exec", text: "x".repeat(900) }),
+        toolResult({ toolName: "read", text: "y".repeat(900) }),
+        toolResult({ toolName: "exec", text: "z".repeat(900) }),
+      ],
+      keepRecentToolResults: 1,
+      keepTailMinChars: 120,
+      keepTailMinUserAssistantMessages: 2,
+      keepTailMaxChars: 8_000,
+      keepTailRespectSummaryBoundary: true,
+    });
+
+    expect(start).toBe(0);
+  });
+
+  it("stops expanding the semantic preserved tail once the minimums are met under the max budget", () => {
+    const start = policy.calculatePreservedTailStart({
+      messages: [
+        assistantMessage("older context that should stay prunable"),
+        userMessage("latest ask"),
+        assistantMessage("latest answer"),
+        toolResult({ toolName: "exec", text: "tail output" }),
+      ],
+      keepRecentToolResults: 1,
+      keepTailMinChars: 25,
+      keepTailMinUserAssistantMessages: 2,
+      keepTailMaxChars: 80,
+      keepTailRespectSummaryBoundary: true,
+    });
+
+    expect(start).toBe(1);
+  });
+
+  it("respects the compact summary-boundary floor when semantic tail selection would otherwise move forward", () => {
+    const start = policy.calculatePreservedTailStart({
+      messages: [
+        userMessage("older request"),
+        { id: "assistant-keep", ...assistantMessage("preserved anchor") },
+        toolResult({ toolName: "exec", text: "older output" }),
+        assistantMessage("new answer"),
+        toolResult({ toolName: "read", text: "latest output" }),
+      ],
+      keepRecentToolResults: 1,
+      keepTailMinChars: 20,
+      keepTailMinUserAssistantMessages: 1,
+      keepTailMaxChars: 60,
+      keepTailRespectSummaryBoundary: true,
+      summaryBoundary: {
+        lastSummarySource: "compact",
+        preservedTailHeadId: "assistant-keep",
+      },
     });
 
     expect(start).toBe(1);

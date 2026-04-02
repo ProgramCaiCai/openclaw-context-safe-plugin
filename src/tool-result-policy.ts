@@ -91,6 +91,10 @@ export function estimatePruneGain(params: {
   messages: ContextSafeMessage[];
   thresholdChars: number;
   keepRecentToolResults: number;
+  keepTailMinChars?: number;
+  keepTailMinUserAssistantMessages?: number;
+  keepTailMaxChars?: number;
+  keepTailRespectSummaryBoundary?: boolean;
   placeholder: string;
   summaryBoundary?: CanonicalSessionSummaryBoundary;
 }): number {
@@ -98,6 +102,12 @@ export function estimatePruneGain(params: {
     params.messages,
     params.keepRecentToolResults,
     params.summaryBoundary,
+    {
+      keepTailMinChars: params.keepTailMinChars,
+      keepTailMinUserAssistantMessages: params.keepTailMinUserAssistantMessages,
+      keepTailMaxChars: params.keepTailMaxChars,
+      keepTailRespectSummaryBoundary: params.keepTailRespectSummaryBoundary,
+    },
   );
   let gain = 0;
 
@@ -124,6 +134,10 @@ export function applyCanonicalPrune(params: {
   messages: ContextSafeMessage[];
   thresholdChars: number;
   keepRecentToolResults: number;
+  keepTailMinChars?: number;
+  keepTailMinUserAssistantMessages?: number;
+  keepTailMaxChars?: number;
+  keepTailRespectSummaryBoundary?: boolean;
   placeholder: string;
   summaryBoundary?: CanonicalSessionSummaryBoundary;
 }): {
@@ -141,6 +155,10 @@ export function applyCanonicalPrune(params: {
       preservedTailStart: calculatePreservedTailStart({
         messages: params.messages,
         keepRecentToolResults: params.keepRecentToolResults,
+        keepTailMinChars: params.keepTailMinChars,
+        keepTailMinUserAssistantMessages: params.keepTailMinUserAssistantMessages,
+        keepTailMaxChars: params.keepTailMaxChars,
+        keepTailRespectSummaryBoundary: params.keepTailRespectSummaryBoundary,
         summaryBoundary: params.summaryBoundary,
       }),
     };
@@ -149,12 +167,22 @@ export function applyCanonicalPrune(params: {
   const preservedTailStart = calculatePreservedTailStart({
     messages: params.messages,
     keepRecentToolResults: params.keepRecentToolResults,
+    keepTailMinChars: params.keepTailMinChars,
+    keepTailMinUserAssistantMessages: params.keepTailMinUserAssistantMessages,
+    keepTailMaxChars: params.keepTailMaxChars,
+    keepTailRespectSummaryBoundary: params.keepTailRespectSummaryBoundary,
     summaryBoundary: params.summaryBoundary,
   });
   const protectedIndexes = findProtectedMessageIndexes(
     params.messages,
     params.keepRecentToolResults,
     params.summaryBoundary,
+    {
+      keepTailMinChars: params.keepTailMinChars,
+      keepTailMinUserAssistantMessages: params.keepTailMinUserAssistantMessages,
+      keepTailMaxChars: params.keepTailMaxChars,
+      keepTailRespectSummaryBoundary: params.keepTailRespectSummaryBoundary,
+    },
   );
   const messages = params.messages.map((message, index) => {
     if (protectedIndexes.has(index)) {
@@ -180,19 +208,95 @@ export function applyCanonicalPrune(params: {
 export function calculatePreservedTailStart(params: {
   messages: ContextSafeMessage[];
   keepRecentToolResults: number;
+  keepTailMinChars?: number;
+  keepTailMinUserAssistantMessages?: number;
+  keepTailMaxChars?: number;
+  keepTailRespectSummaryBoundary?: boolean;
   summaryBoundary?: CanonicalSessionSummaryBoundary;
 }): number | undefined {
-  if (params.messages.length === 0 || params.keepRecentToolResults <= 0) {
+  if (params.messages.length === 0) {
+    return undefined;
+  }
+
+  if (
+    params.keepTailMinChars !== undefined &&
+    params.keepTailMinUserAssistantMessages !== undefined &&
+    params.keepTailMaxChars !== undefined
+  ) {
+    return calculateSemanticPreservedTailStart({
+      messages: params.messages,
+      keepRecentToolResults: params.keepRecentToolResults,
+      keepTailMinChars: params.keepTailMinChars,
+      keepTailMinUserAssistantMessages: params.keepTailMinUserAssistantMessages,
+      keepTailMaxChars: params.keepTailMaxChars,
+      keepTailRespectSummaryBoundary: params.keepTailRespectSummaryBoundary,
+      summaryBoundary: params.summaryBoundary,
+    });
+  }
+
+  if (params.keepRecentToolResults <= 0) {
     return undefined;
   }
 
   let startIndex = Math.max(0, params.messages.length - Math.max(0, params.keepRecentToolResults));
-  const summaryBoundaryFloor = findSummaryBoundaryFloorIndex(
-    params.messages,
-    params.summaryBoundary,
-  );
+  const summaryBoundaryFloor =
+    params.keepTailRespectSummaryBoundary === false
+      ? undefined
+      : findSummaryBoundaryFloorIndex(params.messages, params.summaryBoundary);
   if (summaryBoundaryFloor !== undefined) {
     startIndex = Math.min(startIndex, summaryBoundaryFloor);
+  }
+  return preserveApiInvariants(params.messages, startIndex);
+}
+
+function calculateSemanticPreservedTailStart(params: {
+  messages: ContextSafeMessage[];
+  keepRecentToolResults: number;
+  keepTailMinChars: number;
+  keepTailMinUserAssistantMessages: number;
+  keepTailMaxChars: number;
+  keepTailRespectSummaryBoundary?: boolean;
+  summaryBoundary?: CanonicalSessionSummaryBoundary;
+}): number | undefined {
+  const floor =
+    params.keepTailRespectSummaryBoundary === false
+      ? undefined
+      : findSummaryBoundaryFloorIndex(params.messages, params.summaryBoundary);
+  const minIndex = floor ?? 0;
+  const fixedStart = Math.max(
+    minIndex,
+    Math.max(0, params.messages.length - Math.max(1, params.keepRecentToolResults)),
+  );
+  let startIndex = fixedStart;
+  let totalChars = 0;
+  let userAssistantCount = 0;
+
+  for (let i = fixedStart; i < params.messages.length; i++) {
+    totalChars += estimatePreservedTailChars(params.messages[i]);
+    userAssistantCount += isUserAssistantTailMessage(params.messages[i]) ? 1 : 0;
+  }
+
+  for (let i = fixedStart - 1; i >= minIndex; i--) {
+    if (
+      totalChars >= params.keepTailMinChars &&
+      userAssistantCount >= params.keepTailMinUserAssistantMessages
+    ) {
+      break;
+    }
+
+    const nextMessage = params.messages[i];
+    const nextChars = totalChars + estimatePreservedTailChars(nextMessage);
+    if (startIndex < params.messages.length && nextChars > params.keepTailMaxChars) {
+      break;
+    }
+
+    startIndex = i;
+    totalChars = nextChars;
+    userAssistantCount += isUserAssistantTailMessage(nextMessage) ? 1 : 0;
+  }
+
+  if (floor !== undefined) {
+    startIndex = Math.min(startIndex, floor);
   }
   return preserveApiInvariants(params.messages, startIndex);
 }
@@ -277,21 +381,25 @@ function findProtectedMessageIndexes(
   messages: ContextSafeMessage[],
   protectedWindowSize: number,
   summaryBoundary?: CanonicalSessionSummaryBoundary,
+  tailConfig?: {
+    keepTailMinChars?: number;
+    keepTailMinUserAssistantMessages?: number;
+    keepTailMaxChars?: number;
+    keepTailRespectSummaryBoundary?: boolean;
+  },
 ): Set<number> {
   const protectedIndexes = new Set<number>();
   const protectedToolCallIds = new Set<string>();
-  const windowSize = Math.max(0, protectedWindowSize);
-  const headStop = Math.min(messages.length, windowSize);
   const tailStart = calculatePreservedTailStart({
     messages,
     keepRecentToolResults: protectedWindowSize,
+    keepTailMinChars: tailConfig?.keepTailMinChars,
+    keepTailMinUserAssistantMessages: tailConfig?.keepTailMinUserAssistantMessages,
+    keepTailMaxChars: tailConfig?.keepTailMaxChars,
+    keepTailRespectSummaryBoundary: tailConfig?.keepTailRespectSummaryBoundary,
     summaryBoundary,
   });
 
-  for (let i = 0; i < headStop; i++) {
-    protectedIndexes.add(i);
-    addProtectedToolCallIds(protectedToolCallIds, messages[i]);
-  }
   if (tailStart !== undefined) {
     for (let i = tailStart; i < messages.length; i++) {
       protectedIndexes.add(i);
@@ -313,11 +421,12 @@ function findProtectedMessageIndexes(
       protectedIndexes.add(i);
       continue;
     }
-    if (protectedIndexes.has(i) || !Array.isArray(messages[i].content)) {
+    const content = messages[i].content;
+    if (protectedIndexes.has(i) || !Array.isArray(content)) {
       continue;
     }
-    const hasProtectedToolUse = messages[i].content.some(
-      (block) =>
+    const hasProtectedToolUse = content.some(
+      (block: unknown) =>
         isRecord(block) &&
         block.type === "tool_use" &&
         protectedToolCallIds.has(asTrimmedString(block.id) ?? ""),
@@ -353,8 +462,28 @@ function collectMessageText(message: ContextSafeMessage): string {
   return textBlocksOf(message).join("\n");
 }
 
+function isUserAssistantTailMessage(message: ContextSafeMessage): boolean {
+  if (message.role === "user") {
+    return collectMessageText(message).trim().length > 0;
+  }
+  if (message.role !== "assistant") {
+    return false;
+  }
+  if (collectMessageText(message).trim().length > 0) {
+    return true;
+  }
+  if (!Array.isArray(message.content)) {
+    return false;
+  }
+  return message.content.some((block) => isRecord(block) && !isThinkingLikeBlock(block));
+}
+
 function getToolResultText(message: ContextSafeMessage): string {
   return textBlocksOf(message).join("\n");
+}
+
+function estimatePreservedTailChars(message: ContextSafeMessage): number {
+  return estimateMessageChars(message) + estimateThinkingChars(message);
 }
 
 function estimateUnknownChars(value: unknown): number {

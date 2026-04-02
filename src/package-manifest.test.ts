@@ -15,6 +15,7 @@ describe("package manifest", () => {
     const packageJson = readPackageJson();
 
     expect(packageJson.files).toContain("scripts/install.py");
+    expect(packageJson.files).toContain("src/api-invariants.ts");
   });
 
   it("publishes all src/context-engine.ts runtime-imported source files", () => {
@@ -73,6 +74,25 @@ describe("package manifest", () => {
           type: "integer",
           minimum: 0,
           default: 5,
+        },
+        keepTailMinChars: {
+          type: "integer",
+          minimum: 1,
+          default: 6000,
+        },
+        keepTailMinUserAssistantMessages: {
+          type: "integer",
+          minimum: 1,
+          default: 2,
+        },
+        keepTailMaxChars: {
+          type: "integer",
+          minimum: 1,
+          default: 24000,
+        },
+        keepTailRespectSummaryBoundary: {
+          type: "boolean",
+          default: true,
         },
         placeholder: {
           type: "string",

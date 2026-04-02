@@ -364,7 +364,7 @@ describe("createContextSafeContextEngine", () => {
       tokenBudget: 30_000,
     });
 
-    expect(countThinkingBlocks(assembled.messages)).toBe(1);
+    expect(countThinkingBlocks(assembled.messages)).toBe(0);
     expect(toolResultTexts(assembled.messages)).toEqual([
       "[pruned]",
       "[pruned]",
@@ -430,6 +430,62 @@ describe("createContextSafeContextEngine", () => {
     };
 
     expect(savedState.summaryBoundary?.preservedTailHeadId).toBe("assistant-call-1");
+  });
+
+  it("uses semantic preserved-tail settings to anchor the summary boundary before the last fixed tool-result window", async () => {
+    const engine = createContextSafeContextEngine({
+      prune: {
+        thresholdChars: 1,
+        keepRecentToolResults: 1,
+        keepTailMinChars: 120,
+        keepTailMinUserAssistantMessages: 2,
+        keepTailMaxChars: 8_000,
+        placeholder: "[pruned]",
+      },
+    });
+    const sessionId = "session-semantic-preserved-tail";
+
+    await engine.assemble({
+      sessionId,
+      messages: [
+        {
+          role: "assistant",
+          id: "assistant-legacy-thinking",
+          content: [{ type: "thinking", thinking: "t".repeat(20_000) }],
+        },
+        {
+          role: "user",
+          id: "user-turn-1",
+          content: "Need the preserved tail to keep the latest exchange stable.",
+        },
+        {
+          role: "assistant",
+          id: "assistant-turn-1",
+          content: [{ type: "text", text: "Working through the final verification." }],
+        },
+        {
+          role: "toolResult",
+          toolName: "exec",
+          toolCallId: "tail-burst-1",
+          content: [{ type: "text", text: "x".repeat(900) }],
+        },
+        {
+          role: "toolResult",
+          toolName: "read",
+          toolCallId: "tail-burst-2",
+          content: [{ type: "text", text: "y".repeat(900) }],
+        },
+      ],
+      tokenBudget: 30_000,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      summaryBoundary?: {
+        preservedTailHeadId?: string;
+      };
+    };
+
+    expect(savedState.summaryBoundary?.preservedTailHeadId).toBe("user-turn-1");
   });
 
   it("skips manual compact when the canonical transcript has nothing worth pruning", async () => {
@@ -515,17 +571,17 @@ describe("createContextSafeContextEngine", () => {
       tokenBudget: 30_000,
     });
 
-    expect(countThinkingBlocks(result.messages)).toBe(2);
+    expect(countThinkingBlocks(result.messages)).toBe(1);
     expect(toolResultTexts(result.messages)).toEqual([
-      "head protected tool result 1",
-      "head protected tool result 2",
+      "[pruned]",
+      "[pruned]",
       "[pruned]",
       "[pruned]",
       "tail protected tool result 1",
       "tail protected tool result 2",
     ]);
     expect(toolResultDetails(result.messages)).toEqual([
-      { raw: "h".repeat(10_000) },
+      undefined,
       undefined,
       undefined,
       undefined,
@@ -546,7 +602,7 @@ describe("createContextSafeContextEngine", () => {
     });
     const customEngine = createContextSafeContextEngine({
       prune: {
-        thresholdChars: 25_000,
+        thresholdChars: 7_500,
         keepRecentToolResults: 2,
         placeholder: "[pruned]",
       },
@@ -586,13 +642,13 @@ describe("createContextSafeContextEngine", () => {
     expect(countThinkingBlocks(customResult.messages)).toBe(1);
     expect(toolResultTexts(customResult.messages)).toEqual([
       "[pruned]",
-      "[pruned]",
+      "b".repeat(5_000),
       "recent tool result 1",
       "recent tool result 2",
     ]);
     expect(toolResultDetails(customResult.messages)).toEqual([
       undefined,
-      undefined,
+      { raw: "e".repeat(2_000) },
       undefined,
       undefined,
     ]);
@@ -621,7 +677,7 @@ describe("createContextSafeContextEngine", () => {
     });
 
     expect(fs.existsSync(canonicalStatePath(sessionId))).toBe(true);
-    expect(countThinkingBlocks(firstResult.messages)).toBe(1);
+    expect(countThinkingBlocks(firstResult.messages)).toBe(0);
     expect(toolResultTexts(firstResult.messages)).toEqual([
       "[pruned]",
       "[pruned]",
@@ -687,7 +743,7 @@ describe("createContextSafeContextEngine", () => {
       tokenBudget: 30_000,
     });
 
-    expect(countThinkingBlocks(thirdResult.messages)).toBe(1);
+    expect(countThinkingBlocks(thirdResult.messages)).toBe(0);
     expect(toolResultTexts(thirdResult.messages)).toEqual([
       "[pruned]",
       "[pruned]",
@@ -875,7 +931,7 @@ describe("createContextSafeContextEngine", () => {
       afterTurn: 1,
       compact: 0,
     });
-    expect(countThinkingBlocks(savedState.messages)).toBe(1);
+    expect(countThinkingBlocks(savedState.messages)).toBe(0);
     expect(toolResultTexts(savedState.messages)).toEqual([
       "[pruned]",
       "[pruned]",

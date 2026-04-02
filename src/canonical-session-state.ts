@@ -11,7 +11,7 @@ const CANONICAL_SESSION_STATE_VERSION = 1;
 
 type CanonicalSessionPruneSource = "afterTurn" | "assemble" | "compact";
 
-type CanonicalSessionSummarySource = "assemble" | "compact" | "manual";
+type CanonicalSessionSummarySource = "afterTurn" | "assemble" | "compact" | "manual";
 
 export type CanonicalSessionPruneMetadata = {
   lastPrunedAt: string;
