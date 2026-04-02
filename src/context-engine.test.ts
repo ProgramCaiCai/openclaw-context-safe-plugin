@@ -315,12 +315,12 @@ describe("createContextSafeContextEngine", () => {
           },
         },
       ],
-      tokenBudget: 256,
+      tokenBudget: 384,
     });
 
     expect(textOf(result.messages[0])).toContain("[context-safe session index]");
     expect(textOf(result.messages[0])).toContain("Goal: keep recovery hints easy to find.");
-    expect(textOf(result.messages[0])).toContain("Active plans:");
+    expect(textOf(result.messages[0])).toContain("Plan: docs/plans/context-safe/assemble-plan.md");
     expect(textOf(result.messages[0])).not.toContain("Protected reads:");
     expect(textOf(result.messages[0])).not.toContain("Recent reports:");
   });
