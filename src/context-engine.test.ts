@@ -575,6 +575,100 @@ describe("createContextSafeContextEngine", () => {
       reason: "context-safe canonical transcript already minimal",
     });
   });
+
+  it("tracks repeated compact no-ops and trips a circuit breaker", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-compact-noop-circuit-breaker";
+    const sessionFile = path.join(artifactDir, "manual-compact-noop-circuit-breaker.jsonl");
+    writeTranscript(sessionFile, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: [{ type: "text", text: "world" }] },
+    ]);
+
+    for (let i = 0; i < 3; i++) {
+      await expect(
+        engine.compact({
+          sessionId,
+          sessionFile,
+          tokenBudget: 30_000,
+          force: true,
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        compacted: false,
+      });
+    }
+
+    const blockedResult = await engine.compact({
+      sessionId,
+      sessionFile,
+      tokenBudget: 30_000,
+      force: true,
+    });
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      consecutiveCompactNoops?: number;
+      lastCompactReason?: string;
+    };
+
+    expect(savedState.consecutiveCompactNoops).toBe(3);
+    expect(savedState.lastCompactReason).toContain("already minimal");
+    expect(blockedResult.reason).toContain("circuit breaker");
+  });
+
+  it("resets compact no-op tracking after a meaningful compact succeeds", async () => {
+    const engine = createContextSafeContextEngine({
+      prune: {
+        thresholdChars: 100_000,
+        keepRecentToolResults: 2,
+        placeholder: "[pruned]",
+      },
+    });
+    const sessionId = "session-compact-noop-reset";
+    const sessionFile = path.join(artifactDir, "manual-compact-noop-reset.jsonl");
+    writeTranscript(sessionFile, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: [{ type: "text", text: "world" }] },
+    ]);
+
+    await engine.compact({
+      sessionId,
+      sessionFile,
+      tokenBudget: 30_000,
+      force: true,
+    });
+    await engine.compact({
+      sessionId,
+      sessionFile,
+      tokenBudget: 30_000,
+      force: true,
+    });
+
+    writeTranscript(
+      sessionFile,
+      canonicalMessages({
+        thinkingChars: 16_000,
+        thinkingOnlyChars: 16_000,
+        oldToolTextChars: 9_000,
+        oldToolDetailsChars: 5_000,
+      }),
+    );
+
+    const compactedResult = await engine.compact({
+      sessionId,
+      sessionFile,
+      tokenBudget: 30_000,
+      force: true,
+    });
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      consecutiveCompactNoops?: number;
+      lastCompactReason?: string;
+    };
+
+    expect(compactedResult.compacted).toBe(true);
+    expect(savedState.consecutiveCompactNoops).toBe(0);
+    expect(savedState.lastCompactReason).toContain("compact prune gain");
+  });
+
   it("persists a summary-boundary object when legacy canonical state did not have one", async () => {
     const engine = createContextSafeContextEngine();
     const sessionId = "session-legacy-summary-boundary";

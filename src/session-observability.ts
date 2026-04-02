@@ -26,6 +26,10 @@ export type ContextSafeSessionStats = {
   prunedChars: number;
   pruneReasons: ContextSafePruneReasonCounts;
   topToolOffenders: ContextSafeToolOffender[];
+  consecutiveCompactNoops?: number;
+  lastCompactReason?: string;
+  lastCompactFailedAt?: string;
+  compactCircuitBreakerTripped?: boolean;
 };
 
 export function summarizeContextSafeSessionStats(params: {
@@ -34,6 +38,12 @@ export function summarizeContextSafeSessionStats(params: {
   pruneEvent?: {
     source: keyof ContextSafePruneReasonCounts;
     pruneGain: number;
+  };
+  compactState?: {
+    consecutiveCompactNoops?: number;
+    lastCompactReason?: string;
+    lastCompactFailedAt?: string;
+    compactCircuitBreakerTripped?: boolean;
   };
 }): ContextSafeSessionStats {
   let artifactizedCount = 0;
@@ -97,6 +107,12 @@ export function summarizeContextSafeSessionStats(params: {
   if (params.pruneEvent) {
     pruneReasons[params.pruneEvent.source] += 1;
   }
+  const compactState = params.compactState ?? {
+    consecutiveCompactNoops: params.previous?.consecutiveCompactNoops,
+    lastCompactReason: params.previous?.lastCompactReason,
+    lastCompactFailedAt: params.previous?.lastCompactFailedAt,
+    compactCircuitBreakerTripped: params.previous?.compactCircuitBreakerTripped,
+  };
 
   return {
     artifactizedCount,
@@ -118,6 +134,16 @@ export function summarizeContextSafeSessionStats(params: {
         return left.toolName.localeCompare(right.toolName);
       })
       .slice(0, MAX_TOP_TOOL_OFFENDERS),
+    ...(compactState.consecutiveCompactNoops !== undefined
+      ? { consecutiveCompactNoops: compactState.consecutiveCompactNoops }
+      : {}),
+    ...(compactState.lastCompactReason ? { lastCompactReason: compactState.lastCompactReason } : {}),
+    ...(compactState.lastCompactFailedAt
+      ? { lastCompactFailedAt: compactState.lastCompactFailedAt }
+      : {}),
+    ...(compactState.compactCircuitBreakerTripped !== undefined
+      ? { compactCircuitBreakerTripped: compactState.compactCircuitBreakerTripped }
+      : {}),
   };
 }
 

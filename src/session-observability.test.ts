@@ -87,6 +87,23 @@ describe("summarizeContextSafeSessionStats", () => {
       compact: 0,
     });
   });
+
+  it("carries compact no-op and circuit-breaker metadata into observability output", () => {
+    const stats = summarizeContextSafeSessionStats({
+      messages: [],
+      compactState: {
+        consecutiveCompactNoops: 3,
+        lastCompactReason: "context-safe canonical transcript already minimal",
+        lastCompactFailedAt: "2026-04-02T14:00:00.000Z",
+        compactCircuitBreakerTripped: true,
+      },
+    });
+
+    expect(stats.consecutiveCompactNoops).toBe(3);
+    expect(stats.lastCompactReason).toBe("context-safe canonical transcript already minimal");
+    expect(stats.lastCompactFailedAt).toBe("2026-04-02T14:00:00.000Z");
+    expect(stats.compactCircuitBreakerTripped).toBe(true);
+  });
 });
 
 function toolResult(

@@ -13,6 +13,12 @@ type CanonicalSessionPruneSource = "afterTurn" | "assemble" | "compact";
 
 type CanonicalSessionSummarySource = "afterTurn" | "assemble" | "compact" | "manual";
 
+export type CanonicalSessionCompactMetadata = {
+  lastCompactFailedAt?: string;
+  consecutiveCompactNoops?: number;
+  lastCompactReason?: string;
+};
+
 export type CanonicalSessionPruneMetadata = {
   lastPrunedAt: string;
   lastPruneSource: CanonicalSessionPruneSource;
@@ -49,7 +55,8 @@ export type CanonicalSessionState = {
   contextSafeSessionIndex?: ContextSafeSessionIndex;
   contextSafeStats?: ContextSafeSessionStats;
 } & Partial<CanonicalSessionPruneMetadata> &
-  Partial<CanonicalSessionRuntimeChurnMetadata>;
+  Partial<CanonicalSessionRuntimeChurnMetadata> &
+  Partial<CanonicalSessionCompactMetadata>;
 
 export async function loadCanonicalSessionState(
   sessionId: string,
@@ -114,6 +121,7 @@ export function createCanonicalSessionState(params: {
   messages: ContextSafeMessage[];
   pruneMetadata?: CanonicalSessionPruneMetadata;
   runtimeChurnMetadata?: CanonicalSessionRuntimeChurnMetadata;
+  compactMetadata?: CanonicalSessionCompactMetadata;
   summaryBoundary?: CanonicalSessionSummaryBoundary;
   contextSafeSessionIndex?: ContextSafeSessionIndex;
   contextSafeStats?: ContextSafeSessionStats;
@@ -143,6 +151,7 @@ export function createCanonicalSessionState(params: {
     ...(params.contextSafeStats ? { contextSafeStats: structuredClone(params.contextSafeStats) } : {}),
     ...(params.pruneMetadata ? structuredClone(params.pruneMetadata) : {}),
     ...(runtimeChurnMetadata ? runtimeChurnMetadata : {}),
+    ...(params.compactMetadata ? structuredClone(params.compactMetadata) : {}),
   };
 }
 
@@ -178,7 +187,10 @@ function isCanonicalSessionState(value: unknown): value is CanonicalSessionState
     isOptionalNonNegativeInteger(value.lastPruneGain) &&
     isOptionalPositiveInteger(value.lastThresholdChars) &&
     isOptionalNonNegativeInteger(value.normalizedRuntimeChurnCount) &&
-    isOptionalRuntimeChurnKinds(value.lastRuntimeChurnKinds)
+    isOptionalRuntimeChurnKinds(value.lastRuntimeChurnKinds) &&
+    isOptionalIsoTimestamp(value.lastCompactFailedAt) &&
+    isOptionalNonNegativeInteger(value.consecutiveCompactNoops) &&
+    isOptionalNonEmptyString(value.lastCompactReason)
   );
 }
 

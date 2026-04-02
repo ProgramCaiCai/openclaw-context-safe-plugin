@@ -3,6 +3,7 @@ import {
   createCanonicalSessionState,
   loadCanonicalSessionState,
   saveCanonicalSessionState,
+  type CanonicalSessionCompactMetadata,
   type CanonicalSessionPruneMetadata,
   type CanonicalSessionRuntimeChurnMetadata,
   type CanonicalSessionState,
@@ -36,6 +37,9 @@ type ContextSafeLogger = {
   info?: (message: string) => void;
   warn?: (message: string) => void;
 };
+
+const MAX_CONSECUTIVE_COMPACT_NOOPS = 3;
+const MIN_MEANINGFUL_COMPACT_TOKEN_DELTA = 16;
 
 export function createContextSafeContextEngine(input?: {
   prune?: Partial<ContextSafePruneConfig>;
@@ -142,6 +146,21 @@ export function createContextSafeContextEngine(input?: {
       const tokensBefore = estimateAssembledTokens(synced.state.messages, params.tokenBudget);
       let canonicalState = synced.state;
       let changed = synced.changed;
+      const compactMetadata = readCompactMetadata(canonicalState);
+
+      if (
+        compactMetadata.consecutiveCompactNoops !== undefined &&
+        compactMetadata.consecutiveCompactNoops >= MAX_CONSECUTIVE_COMPACT_NOOPS
+      ) {
+        if (changed) {
+          await persistCanonicalState(canonicalState, logger);
+        }
+        return {
+          ok: true,
+          compacted: false,
+          reason: "context-safe compact circuit breaker tripped after repeated no-ops",
+        };
+      }
 
       const pruned = applyCanonicalPrune({
         messages: canonicalState.messages,
@@ -156,13 +175,22 @@ export function createContextSafeContextEngine(input?: {
       });
 
       if (!pruned.pruned) {
-        if (changed) {
-          await persistCanonicalState(canonicalState, logger);
-        }
+        canonicalState = applyCompactNoopMetadata({
+          state: canonicalState,
+          reason: "context-safe canonical transcript already minimal",
+          logger,
+        });
+        changed = true;
+        await persistCanonicalState(canonicalState, logger);
         return {
           ok: true,
           compacted: false,
-          reason: "context-safe canonical transcript already minimal",
+          reason:
+            readCompactMetadata(canonicalState).consecutiveCompactNoops &&
+            readCompactMetadata(canonicalState).consecutiveCompactNoops! >=
+              MAX_CONSECUTIVE_COMPACT_NOOPS
+              ? "context-safe compact circuit breaker tripped after repeated no-ops"
+              : "context-safe canonical transcript already minimal",
         };
       }
 
@@ -192,6 +220,13 @@ export function createContextSafeContextEngine(input?: {
           thresholdChars: params.force ? 1 : config.prune.thresholdChars,
         }),
         runtimeChurnMetadata: readRuntimeChurnMetadata(canonicalState),
+        compactMetadata: createCompactMetadata({
+          consecutiveCompactNoops: 0,
+          lastCompactReason: formatLastCompactReason({
+            source: "compact",
+            pruneGain: pruned.pruneGain,
+          }),
+        }),
         summaryBoundary,
         contextSafeSessionIndex: buildSessionIndex({
           messages: pruned.messages,
@@ -209,6 +244,14 @@ export function createContextSafeContextEngine(input?: {
             source: "compact",
             pruneGain: pruned.pruneGain,
           },
+          compactState: {
+            consecutiveCompactNoops: 0,
+            lastCompactReason: formatLastCompactReason({
+              source: "compact",
+              pruneGain: pruned.pruneGain,
+            }),
+            compactCircuitBreakerTripped: false,
+          },
         }),
       });
       changed = true;
@@ -218,6 +261,24 @@ export function createContextSafeContextEngine(input?: {
       }
 
       const tokensAfter = estimateAssembledTokens(canonicalState.messages, params.tokenBudget);
+      if (!params.force && tokensBefore - tokensAfter < MIN_MEANINGFUL_COMPACT_TOKEN_DELTA) {
+        canonicalState = applyCompactNoopMetadata({
+          state: canonicalState,
+          reason: "context-safe compact made no meaningful token reduction",
+          logger,
+        });
+        await persistCanonicalState(canonicalState, logger);
+        return {
+          ok: true,
+          compacted: false,
+          reason:
+            readCompactMetadata(canonicalState).consecutiveCompactNoops &&
+            readCompactMetadata(canonicalState).consecutiveCompactNoops! >=
+              MAX_CONSECUTIVE_COMPACT_NOOPS
+              ? "context-safe compact circuit breaker tripped after repeated no-ops"
+              : "context-safe compact made no meaningful token reduction",
+        };
+      }
       return {
         ok: true,
         compacted: true,
@@ -266,6 +327,7 @@ async function synchronizeCanonicalState(params: {
         configSnapshot: params.pruneConfig,
         messages: normalized.messages,
         runtimeChurnMetadata: mergeRuntimeChurnMetadata(undefined, normalized.runtimeChurn),
+        compactMetadata: readCompactMetadata(loaded.state),
         summaryBoundary: readSummaryBoundary(loaded.state),
         contextSafeSessionIndex: buildSessionIndex({
           messages: normalized.messages,
@@ -326,6 +388,7 @@ async function synchronizeCanonicalState(params: {
       messages,
       pruneMetadata: readPruneMetadata(loaded.state),
       runtimeChurnMetadata,
+      compactMetadata: readCompactMetadata(loaded.state),
       summaryBoundary: readSummaryBoundary(loaded.state),
       contextSafeSessionIndex: buildSessionIndex({
         messages,
@@ -547,6 +610,7 @@ function maybePruneCanonicalState(params: {
         thresholdChars: params.pruneConfig.thresholdChars,
       }),
       runtimeChurnMetadata: readRuntimeChurnMetadata(params.state),
+      compactMetadata: readCompactMetadata(params.state),
       summaryBoundary,
       contextSafeSessionIndex: buildSessionIndex({
         messages: pruned.messages,
@@ -563,6 +627,10 @@ function maybePruneCanonicalState(params: {
         pruneEvent: {
           source: params.source,
           pruneGain: pruned.pruneGain,
+        },
+        compactState: {
+          ...readCompactMetadata(params.state),
+          compactCircuitBreakerTripped: false,
         },
       }),
     }),
@@ -636,6 +704,9 @@ function buildSessionIndex(params: {
 }
 
 function readLastCompactReason(state?: CanonicalSessionState): string | undefined {
+  if (typeof state?.lastCompactReason === "string" && state.lastCompactReason.length > 0) {
+    return state.lastCompactReason;
+  }
   if (
     !state ||
     (state.lastPruneSource !== "afterTurn" &&
@@ -656,6 +727,65 @@ function formatLastCompactReason(params: {
   pruneGain: number;
 }): string {
   return `${params.source} prune gain ${params.pruneGain}`;
+}
+
+function createCompactMetadata(
+  params: CanonicalSessionCompactMetadata,
+): CanonicalSessionCompactMetadata {
+  return {
+    ...(typeof params.lastCompactFailedAt === "string"
+      ? { lastCompactFailedAt: params.lastCompactFailedAt }
+      : {}),
+    ...(typeof params.consecutiveCompactNoops === "number"
+      ? { consecutiveCompactNoops: params.consecutiveCompactNoops }
+      : {}),
+    ...(typeof params.lastCompactReason === "string"
+      ? { lastCompactReason: params.lastCompactReason }
+      : {}),
+  };
+}
+
+function applyCompactNoopMetadata(params: {
+  state: CanonicalSessionState;
+  reason: string;
+  logger?: ContextSafeLogger;
+}): CanonicalSessionState {
+  const previous = readCompactMetadata(params.state);
+  const nextNoops = (previous.consecutiveCompactNoops ?? 0) + 1;
+  const compactMetadata = createCompactMetadata({
+    consecutiveCompactNoops: nextNoops,
+    lastCompactFailedAt: new Date().toISOString(),
+    lastCompactReason: params.reason,
+  });
+  if (nextNoops >= MAX_CONSECUTIVE_COMPACT_NOOPS) {
+    params.logger?.warn?.(
+      `context-safe compact circuit breaker tripped after ${nextNoops} consecutive no-ops`,
+    );
+  }
+  return createCanonicalSessionState({
+    sessionId: params.state.sessionId,
+    sourceMessageCount: params.state.sourceMessageCount,
+    sessionMode: params.state.sessionMode,
+    configSnapshot: params.state.configSnapshot,
+    messages: params.state.messages,
+    pruneMetadata: readPruneMetadata(params.state),
+    runtimeChurnMetadata: readRuntimeChurnMetadata(params.state),
+    compactMetadata,
+    summaryBoundary: readSummaryBoundary(params.state),
+    contextSafeSessionIndex: buildSessionIndex({
+      messages: params.state.messages,
+      state: params.state,
+      lastCompactReasonOverride: params.reason,
+    }),
+    contextSafeStats: summarizeContextSafeSessionStats({
+      messages: params.state.messages,
+      previous: params.state.contextSafeStats,
+      compactState: {
+        ...compactMetadata,
+        compactCircuitBreakerTripped: nextNoops >= MAX_CONSECUTIVE_COMPACT_NOOPS,
+      },
+    }),
+  });
 }
 
 function estimateSyntheticMessageChars(message: ContextSafeMessage): number {
@@ -775,6 +905,17 @@ function readPruneMetadata(state: CanonicalSessionState): CanonicalSessionPruneM
     lastPruneGain: state.lastPruneGain,
     lastThresholdChars: state.lastThresholdChars,
   };
+}
+
+function readCompactMetadata(
+  state: CanonicalSessionState | undefined,
+): CanonicalSessionCompactMetadata {
+  return createCompactMetadata({
+    lastCompactFailedAt: state?.lastCompactFailedAt,
+    consecutiveCompactNoops:
+      typeof state?.consecutiveCompactNoops === "number" ? state.consecutiveCompactNoops : undefined,
+    lastCompactReason: state?.lastCompactReason,
+  });
 }
 
 function readRuntimeChurnMetadata(
