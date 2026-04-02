@@ -268,7 +268,13 @@ function isOptionalPruneSource(value: unknown): value is CanonicalSessionPruneSo
 }
 
 function isOptionalSummarySource(value: unknown): value is CanonicalSessionSummarySource | undefined {
-  return value === undefined || value === "assemble" || value === "compact" || value === "manual";
+  return (
+    value === undefined ||
+    value === "afterTurn" ||
+    value === "assemble" ||
+    value === "compact" ||
+    value === "manual"
+  );
 }
 
 function isOptionalRuntimeChurnKinds(value: unknown): value is RuntimeChurnKind[] | undefined {
@@ -299,7 +305,12 @@ function isContextSafeSessionIndex(value: unknown): value is ContextSafeSessionI
     isStringArray(value.recentConclusions) &&
     isStringArray(value.openThreads) &&
     isContextSafeSessionIndexArtifacts(value.keyArtifacts) &&
-    isStringArray(value.recoveryHints)
+    isStringArray(value.recoveryHints) &&
+    isStringArray(value.activePlans) &&
+    isStringArray(value.protectedReads) &&
+    isStringArray(value.recentReports) &&
+    isOptionalSummaryBoundary(value.summaryBoundary) &&
+    isOptionalNonEmptyString(value.lastCompactReason)
   );
 }
 

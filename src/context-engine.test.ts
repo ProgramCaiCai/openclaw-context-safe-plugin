@@ -175,7 +175,7 @@ describe("createContextSafeContextEngine", () => {
           },
         },
       ],
-      tokenBudget: 256,
+      tokenBudget: 1000,
     });
 
     const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
@@ -227,7 +227,11 @@ describe("createContextSafeContextEngine", () => {
     const result = await engine.assemble({
       sessionId,
       messages: [
-        { role: "user", content: "Goal: keep recovery hints easy to find." },
+        {
+          role: "user",
+          content:
+            "Goal: keep recovery hints easy to find. Plan: docs/plans/context-safe/assemble-plan.md",
+        },
         {
           role: "assistant",
           content: [{ type: "text", text: "Conclusion: indexing is ready for assemble." }],
@@ -235,6 +239,15 @@ describe("createContextSafeContextEngine", () => {
         {
           role: "assistant",
           content: [{ type: "text", text: "Next: inject the synthetic summary carefully." }],
+        },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: "Recovery note: reread SOUL.md and review reports/context-safe/assemble/evidence.md.",
+            },
+          ],
         },
         {
           role: "toolResult",
@@ -248,15 +261,68 @@ describe("createContextSafeContextEngine", () => {
           },
         },
       ],
-      tokenBudget: 128,
+      tokenBudget: 1000,
     });
 
     expect(textOf(result.messages[0])).toContain("[context-safe session index]");
     expect(textOf(result.messages[0])).toContain("Goal: keep recovery hints easy to find.");
     expect(textOf(result.messages[0])).toContain("/tmp/assemble-index-artifact.json");
+    expect(textOf(result.messages[0])).toContain("Active plans:");
+    expect(textOf(result.messages[0])).toContain("Recent reports:");
+    expect(textOf(result.messages[0])).toContain("Protected reads:");
     expect(result.messages.slice(1).map((message) => textOf(message))).toContain(
-      "Goal: keep recovery hints easy to find.",
+      "Goal: keep recovery hints easy to find. Plan: docs/plans/context-safe/assemble-plan.md",
     );
+  });
+
+  it("falls back to a compact session index representation when the injection budget is tighter", async () => {
+    const engine = createContextSafeContextEngine();
+
+    const result = await engine.assemble({
+      sessionId: "session-index-assemble-compact",
+      messages: [
+        {
+          role: "user",
+          content:
+            "Goal: keep recovery hints easy to find. Plan: docs/plans/context-safe/assemble-plan.md",
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Conclusion: indexing is ready for assemble." }],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Next: inject the synthetic summary carefully." }],
+        },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: "Recovery note: reread SOUL.md and review reports/context-safe/assemble/evidence.md.",
+            },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolName: "exec",
+          content: [{ type: "text", text: "artifact preview" }],
+          details: {
+            contextSafe: {
+              resultMode: "artifact",
+              outputFile: "/tmp/assemble-index-artifact.json",
+            },
+          },
+        },
+      ],
+      tokenBudget: 256,
+    });
+
+    expect(textOf(result.messages[0])).toContain("[context-safe session index]");
+    expect(textOf(result.messages[0])).toContain("Goal: keep recovery hints easy to find.");
+    expect(textOf(result.messages[0])).toContain("Active plans:");
+    expect(textOf(result.messages[0])).not.toContain("Protected reads:");
+    expect(textOf(result.messages[0])).not.toContain("Recent reports:");
   });
 
   it("skips the synthetic session index when it would crowd out already-fitting context", async () => {
@@ -852,6 +918,9 @@ describe("createContextSafeContextEngine", () => {
         recentConclusions?: string[];
         openThreads?: string[];
         keyArtifacts?: Array<{ pointer?: string }>;
+        activePlans?: string[];
+        protectedReads?: string[];
+        recentReports?: string[];
       };
     };
 
@@ -867,6 +936,9 @@ describe("createContextSafeContextEngine", () => {
           preview: "preview",
         },
       ],
+      activePlans: [],
+      protectedReads: [],
+      recentReports: [],
       recoveryHints: [expect.stringContaining("rerun a narrower command")],
     });
   });
@@ -1006,6 +1078,9 @@ describe("createContextSafeContextEngine", () => {
       recentConclusions: ["Conclusion: legacy state loaded."],
       openThreads: [],
       keyArtifacts: [],
+      activePlans: [],
+      protectedReads: [],
+      recentReports: [],
       recoveryHints: [],
     });
   });
@@ -1058,10 +1133,13 @@ describe("createContextSafeContextEngine", () => {
       tokenBudget: 512,
     });
 
-    expect(textOf(secondResult.messages[1] as { content?: unknown })).toContain(
-      "Child task completion (success): runtime-churn-slimming",
-    );
-    expect(textOf(secondResult.messages[1] as { content?: unknown })).not.toContain(
+    const secondTexts = secondResult.messages.map((message) => textOf(message));
+    expect(
+      secondTexts.find((text) =>
+        text.includes("Child task completion (success): runtime-churn-slimming"),
+      ),
+    ).toContain("Child task completion (success): runtime-churn-slimming");
+    expect(secondTexts.join("\n")).not.toContain(
       "RAW UPSTREAM HISTORY SHOULD NOT REPLACE THE CANONICAL SUMMARY",
     );
   });

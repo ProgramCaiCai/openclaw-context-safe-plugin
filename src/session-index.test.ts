@@ -8,7 +8,11 @@ describe("buildContextSafeSessionIndex", () => {
   it("builds a bounded two-layer session index from canonical messages and context-safe metadata", () => {
     const index = buildContextSafeSessionIndex({
       messages: [
-        { role: "user", content: "Goal: finish the managed context-safe upgrade and keep state stable." },
+        {
+          role: "user",
+          content:
+            "Goal: finish the managed context-safe upgrade and keep state stable. Plan: docs/plans/context-safe/plan.md",
+        },
         {
           role: "assistant",
           content: [{ type: "text", text: "Conclusion: persistence fallback is now recovery-safe." }],
@@ -16,6 +20,15 @@ describe("buildContextSafeSessionIndex", () => {
         {
           role: "assistant",
           content: [{ type: "text", text: "Next: wire observability into canonical state." }],
+        },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: "Recovery note: reread SOUL.md and AGENTS.md, then verify reports/context-safe/run-1/evidence.md.",
+            },
+          ],
         },
         {
           role: "toolResult",
@@ -29,10 +42,14 @@ describe("buildContextSafeSessionIndex", () => {
           },
         },
       ],
+      summaryBoundary: {
+        preservedTailHeadId: "msg-8",
+      },
+      lastCompactReason: "compact prune gain 120000",
     });
 
     expect(index.goals).toEqual([
-      "Goal: finish the managed context-safe upgrade and keep state stable.",
+      "Goal: finish the managed context-safe upgrade and keep state stable. Plan: docs/plans/context-safe/plan.md",
     ]);
     expect(index.recentConclusions).toEqual([
       "Conclusion: persistence fallback is now recovery-safe.",
@@ -48,6 +65,13 @@ describe("buildContextSafeSessionIndex", () => {
         preview: "artifact preview for build logs",
       },
     ]);
+    expect(index.activePlans).toEqual(["docs/plans/context-safe/plan.md"]);
+    expect(index.protectedReads).toEqual(["SOUL.md", "AGENTS.md"]);
+    expect(index.recentReports).toEqual(["reports/context-safe/run-1/evidence.md"]);
+    expect(index.summaryBoundary).toEqual({
+      preservedTailHeadId: "msg-8",
+    });
+    expect(index.lastCompactReason).toBe("compact prune gain 120000");
     expect(index.recoveryHints).toHaveLength(1);
     expect(index.recoveryHints[0]).toContain("rerun a narrower command");
   });
@@ -90,29 +114,41 @@ describe("buildContextSafeSessionIndex", () => {
   it("renders a bounded synthetic assemble message and minimizes it when the budget is tight", () => {
     const index = buildContextSafeSessionIndex({
       messages: [
-        { role: "user", content: "Goal: fourth" },
+        { role: "user", content: "Goal: fourth Plan: docs/plans/run-4.md" },
         { role: "assistant", content: [{ type: "text", text: "Conclusion: four" }] },
         { role: "assistant", content: [{ type: "text", text: "Next: four" }] },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Recovery note: inspect SOUL.md before reviewing reports/context-safe/run-4.md" }],
+        },
         toolArtifact("exec", "/tmp/artifact-5.json"),
       ],
+      summaryBoundary: {
+        preservedTailHeadId: "msg-8",
+      },
+      lastCompactReason: "compact prune gain 120000",
     });
 
     const fullMessage = buildContextSafeSessionIndexMessage({
       index,
-      maxChars: 400,
+      maxChars: 600,
     });
     const minimalMessage = buildContextSafeSessionIndexMessage({
       index,
-      maxChars: 120,
+      maxChars: 180,
     });
 
     expect(textOf(fullMessage)).toContain("[context-safe session index]");
     expect(textOf(fullMessage)).toContain("Goal: fourth");
     expect(textOf(fullMessage)).toContain("/tmp/artifact-5.json");
-    expect(textOf(fullMessage).length).toBeLessThanOrEqual(400);
+    expect(textOf(fullMessage)).toContain("Active plans:");
+    expect(textOf(fullMessage)).toContain("Protected reads:");
+    expect(textOf(fullMessage)).toContain("Recent reports:");
+    expect(textOf(fullMessage).length).toBeLessThanOrEqual(600);
     expect(textOf(minimalMessage)).toContain("[context-safe session index]");
     expect(textOf(minimalMessage)).not.toContain("Recovery hints:");
-    expect(textOf(minimalMessage).length).toBeLessThanOrEqual(120);
+    expect(textOf(minimalMessage)).not.toContain("Protected reads:");
+    expect(textOf(minimalMessage).length).toBeLessThanOrEqual(180);
   });
 });
 

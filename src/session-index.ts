@@ -1,4 +1,5 @@
 import { resolveToolResultRecoveryHint } from "./tool-result-notices.js";
+import { type CanonicalSessionSummaryBoundary } from "./canonical-session-state.js";
 import { type ContextSafeMessage } from "./tool-result-policy.js";
 
 const MAX_INDEX_GOALS = 3;
@@ -6,8 +7,26 @@ const MAX_INDEX_CONCLUSIONS = 3;
 const MAX_INDEX_OPEN_THREADS = 3;
 const MAX_INDEX_ARTIFACTS = 4;
 const MAX_INDEX_RECOVERY_HINTS = 3;
+const MAX_INDEX_ACTIVE_PLANS = 3;
+const MAX_INDEX_PROTECTED_READS = 4;
+const MAX_INDEX_RECENT_REPORTS = 3;
 const MAX_INDEX_TEXT_CHARS = 160;
 const MAX_INDEX_POINTER_CHARS = 220;
+const PLAN_PATH_PATTERN = /\b(?:docs\/plans\/[^\s)]+\.md|reports\/[^\s)]*plan[^\s)]*\.md)\b/gi;
+const REPORT_PATH_PATTERN = /\breports\/[^\s)]+(?:\.[a-z0-9_-]+)?\b/gi;
+const PROTECTED_READ_CANONICAL_NAMES = new Map([
+  ["agents.md", "AGENTS.md"],
+  ["heartbeat.md", "HEARTBEAT.md"],
+  ["identity.md", "IDENTITY.md"],
+  ["memory.md", "MEMORY.md"],
+  ["now.md", "NOW.md"],
+  ["session-state.md", "SESSION-STATE.md"],
+  ["skill.md", "SKILL.md"],
+  ["soul.md", "SOUL.md"],
+  ["today.md", "TODAY.md"],
+  ["tools.md", "TOOLS.md"],
+  ["user.md", "USER.md"],
+]);
 
 export type ContextSafeSessionIndexArtifact = {
   toolName: string;
@@ -22,10 +41,21 @@ export type ContextSafeSessionIndex = {
   openThreads: string[];
   keyArtifacts: ContextSafeSessionIndexArtifact[];
   recoveryHints: string[];
+  activePlans: string[];
+  protectedReads: string[];
+  recentReports: string[];
+  summaryBoundary?: {
+    lastSummarizedMessageId?: string;
+    preservedTailHeadId?: string;
+    lastSummarySource?: string;
+  };
+  lastCompactReason?: string;
 };
 
 export function buildContextSafeSessionIndex(params: {
   messages: ContextSafeMessage[];
+  summaryBoundary?: CanonicalSessionSummaryBoundary;
+  lastCompactReason?: string;
 }): ContextSafeSessionIndex {
   const goals = collectRecentStrings(params.messages, MAX_INDEX_GOALS, (message) => {
     if (message.role !== "user") {
@@ -51,7 +81,7 @@ export function buildContextSafeSessionIndex(params: {
     if (!text || !isOpenThreadLike(text)) {
       return undefined;
     }
-    return text;
+    return stripStructuredReferenceTail(text);
   });
 
   const keyArtifacts = collectRecentArtifacts(params.messages);
@@ -59,6 +89,15 @@ export function buildContextSafeSessionIndex(params: {
     keyArtifacts.map((artifact) => compactIndexText(resolveToolResultRecoveryHint(artifact.toolName))),
     MAX_INDEX_RECOVERY_HINTS,
   );
+  const activePlans = collectRecentPathMatches(params.messages, MAX_INDEX_ACTIVE_PLANS, (text) =>
+    extractMatches(text, PLAN_PATH_PATTERN),
+  );
+  const protectedReads = collectRecentProtectedReads(params.messages);
+  const recentReports = collectRecentPathMatches(params.messages, MAX_INDEX_RECENT_REPORTS, (text) =>
+    extractMatches(text, REPORT_PATH_PATTERN).filter((value) => !isPlanPath(value)),
+  );
+  const summaryBoundary = normalizeSummaryBoundary(params.summaryBoundary);
+  const lastCompactReason = normalizeCompactReason(params.lastCompactReason);
 
   return {
     goals,
@@ -66,6 +105,11 @@ export function buildContextSafeSessionIndex(params: {
     openThreads,
     keyArtifacts,
     recoveryHints,
+    activePlans,
+    protectedReads,
+    recentReports,
+    ...(summaryBoundary ? { summaryBoundary } : {}),
+    ...(lastCompactReason ? { lastCompactReason } : {}),
   };
 }
 
@@ -183,9 +227,14 @@ function compactIndexText(text: string): string {
 
 function renderFullIndexText(index: ContextSafeSessionIndex): string {
   const sections = ["[context-safe session index]"];
-  pushSection(sections, "Goals", index.goals);
+  pushSection(sections, "Goals", index.goals.map(toDisplayText));
   pushSection(sections, "Recent conclusions", index.recentConclusions);
-  pushSection(sections, "Open threads", index.openThreads);
+  pushSection(sections, "Open threads", index.openThreads.map(toDisplayText));
+  pushSection(sections, "Active plans", index.activePlans);
+  pushSection(sections, "Protected reads", index.protectedReads);
+  pushSection(sections, "Recent reports", index.recentReports);
+  pushOptionalLine(sections, "Summary boundary", renderSummaryBoundary(index.summaryBoundary));
+  pushOptionalLine(sections, "Last compact reason", index.lastCompactReason);
   pushSection(
     sections,
     "Key artifacts",
@@ -199,8 +248,11 @@ function renderFullIndexText(index: ContextSafeSessionIndex): string {
 
 function renderCompactIndexText(index: ContextSafeSessionIndex): string {
   const sections = ["[context-safe session index]"];
-  pushSection(sections, "Goals", index.goals.slice(0, 2));
-  pushSection(sections, "Open threads", index.openThreads.slice(0, 2));
+  pushSection(sections, "Goals", index.goals.slice(0, 2).map(toDisplayText));
+  pushSection(sections, "Open threads", index.openThreads.slice(0, 2).map(toDisplayText));
+  pushSection(sections, "Active plans", index.activePlans.slice(0, 2));
+  pushSection(sections, "Protected reads", index.protectedReads.slice(0, 2));
+  pushSection(sections, "Recent reports", index.recentReports.slice(0, 2));
   pushSection(
     sections,
     "Key artifacts",
@@ -211,8 +263,8 @@ function renderCompactIndexText(index: ContextSafeSessionIndex): string {
 
 function renderMinimalIndexText(index: ContextSafeSessionIndex): string {
   const lines = ["[context-safe session index]"];
-  const firstGoal = index.goals[0];
-  const firstThread = index.openThreads[0];
+  const firstGoal = toDisplayText(index.goals[0]);
+  const firstThread = toDisplayText(index.openThreads[0]);
   const firstArtifact = index.keyArtifacts[0];
   if (firstGoal) {
     lines.push(`Goal: ${firstGoal}`);
@@ -222,6 +274,10 @@ function renderMinimalIndexText(index: ContextSafeSessionIndex): string {
   }
   if (firstArtifact) {
     lines.push(`Artifact: ${firstArtifact.pointer}`);
+  }
+  const firstPlan = index.activePlans[0];
+  if (firstPlan) {
+    lines.push(`Plan: ${firstPlan}`);
   }
   return lines.join("\n");
 }
@@ -234,6 +290,37 @@ function pushSection(target: string[], label: string, values: string[]): void {
   for (const value of values) {
     target.push(`- ${value}`);
   }
+}
+
+function pushOptionalLine(target: string[], label: string, value?: string): void {
+  if (!value) {
+    return;
+  }
+  target.push(`${label}: ${value}`);
+}
+
+function toDisplayText(value: string | undefined): string {
+  return value ? stripStructuredReferenceTail(value) : "";
+}
+
+function renderSummaryBoundary(
+  summaryBoundary?: ContextSafeSessionIndex["summaryBoundary"],
+): string | undefined {
+  if (!summaryBoundary) {
+    return undefined;
+  }
+  const parts = [
+    summaryBoundary.preservedTailHeadId
+      ? `preservedTailHeadId=${summaryBoundary.preservedTailHeadId}`
+      : undefined,
+    summaryBoundary.lastSummarizedMessageId
+      ? `lastSummarizedMessageId=${summaryBoundary.lastSummarizedMessageId}`
+      : undefined,
+    summaryBoundary.lastSummarySource
+      ? `lastSummarySource=${summaryBoundary.lastSummarySource}`
+      : undefined,
+  ].filter((value): value is string => !!value);
+  return parts.length > 0 ? parts.join(", ") : undefined;
 }
 
 function trimToChars(text: string, maxChars: number): string {
@@ -272,6 +359,124 @@ function isOpenThreadLike(text: string): boolean {
 
 function isToolResultMessage(message: ContextSafeMessage): boolean {
   return message.role === "toolResult" || message.role === "tool" || message.type === "toolResult";
+}
+
+function collectRecentPathMatches(
+  messages: ContextSafeMessage[],
+  limit: number,
+  extract: (text: string) => string[],
+): string[] {
+  const values: string[] = [];
+  const seen = new Set<string>();
+
+  for (let i = messages.length - 1; i >= 0 && values.length < limit; i--) {
+    const text = collectMessageText(messages[i]);
+    if (!text) {
+      continue;
+    }
+    for (const match of extract(text)) {
+      const trimmed = trimToChars(match, MAX_INDEX_POINTER_CHARS);
+      if (seen.has(trimmed)) {
+        continue;
+      }
+      seen.add(trimmed);
+      values.push(trimmed);
+      if (values.length >= limit) {
+        break;
+      }
+    }
+  }
+
+  return values;
+}
+
+function stripStructuredReferenceTail(text: string): string {
+  const structuredIndex = findStructuredReferenceIndex(text);
+  if (structuredIndex < 0) {
+    return text;
+  }
+  const prefix = text.slice(0, structuredIndex);
+  const separatorIndex = Math.max(prefix.lastIndexOf(","), prefix.lastIndexOf(";"));
+  const trimmed = (separatorIndex >= 0 ? prefix.slice(0, separatorIndex) : prefix).trim();
+  const normalized = trimmed.replace(/[,:;\s]+$/g, "");
+  return text.endsWith(".") && !normalized.endsWith(".") ? `${normalized}.` : normalized;
+}
+
+function findStructuredReferenceIndex(text: string): number {
+  const indexes = [
+    findFirstMatchedIndex(text, PLAN_PATH_PATTERN),
+    findFirstMatchedIndex(text, REPORT_PATH_PATTERN),
+    ...collectRecentProtectedReads([{ content: text }]).map((value) => text.indexOf(value)),
+  ].filter((value) => value >= 0);
+  return indexes.length > 0 ? Math.min(...indexes) : -1;
+}
+
+function findFirstMatchedIndex(text: string, pattern: RegExp): number {
+  const match = pattern.exec(text);
+  pattern.lastIndex = 0;
+  return match?.index ?? -1;
+}
+
+function collectRecentProtectedReads(messages: ContextSafeMessage[]): string[] {
+  const values: string[] = [];
+  const seen = new Set<string>();
+  const basenamePattern = /\b[A-Za-z0-9._-]+\.md\b/g;
+
+  for (let i = messages.length - 1; i >= 0 && values.length < MAX_INDEX_PROTECTED_READS; i--) {
+    const text = collectMessageText(messages[i]);
+    if (!text) {
+      continue;
+    }
+    const matches = text.match(basenamePattern) ?? [];
+    for (const match of matches) {
+      const canonical = PROTECTED_READ_CANONICAL_NAMES.get(match.toLowerCase());
+      if (!canonical || seen.has(canonical)) {
+        continue;
+      }
+      seen.add(canonical);
+      values.push(canonical);
+      if (values.length >= MAX_INDEX_PROTECTED_READS) {
+        break;
+      }
+    }
+  }
+
+  return values;
+}
+
+function extractMatches(text: string, pattern: RegExp): string[] {
+  const matches = Array.from(text.matchAll(pattern), (match) => match[0] ?? "").filter(Boolean);
+  pattern.lastIndex = 0;
+  return matches;
+}
+
+function isPlanPath(value: string): boolean {
+  return value.startsWith("docs/plans/") || /\/plan[^/]*\.md$/i.test(value);
+}
+
+function normalizeSummaryBoundary(
+  value?: CanonicalSessionSummaryBoundary,
+): ContextSafeSessionIndex["summaryBoundary"] | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = {
+    ...(typeof value.lastSummarizedMessageId === "string"
+      ? { lastSummarizedMessageId: value.lastSummarizedMessageId }
+      : {}),
+    ...(typeof value.preservedTailHeadId === "string"
+      ? { preservedTailHeadId: value.preservedTailHeadId }
+      : {}),
+    ...(value.lastSummarySource ? { lastSummarySource: value.lastSummarySource } : {}),
+  };
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function normalizeCompactReason(value?: string): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return compactIndexText(value);
 }
 
 function normalizeToolName(value: unknown): string | undefined {
