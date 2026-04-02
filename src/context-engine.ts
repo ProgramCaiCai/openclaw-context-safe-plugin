@@ -6,6 +6,7 @@ import {
   type CanonicalSessionPruneMetadata,
   type CanonicalSessionRuntimeChurnMetadata,
   type CanonicalSessionState,
+  type CanonicalSessionSummaryBoundary,
 } from "./canonical-session-state.js";
 import {
   normalizeContextSafeEngineConfig,
@@ -170,6 +171,7 @@ export function createContextSafeContextEngine(input?: {
       canonicalState = createCanonicalSessionState({
         sessionId: canonicalState.sessionId,
         sourceMessageCount: canonicalState.sourceMessageCount,
+        sessionMode: canonicalState.sessionMode,
         configSnapshot: config.prune,
         messages: pruned.messages,
         pruneMetadata: createPruneMetadata({
@@ -178,6 +180,12 @@ export function createContextSafeContextEngine(input?: {
           thresholdChars: params.force ? 1 : config.prune.thresholdChars,
         }),
         runtimeChurnMetadata: readRuntimeChurnMetadata(canonicalState),
+        summaryBoundary: buildSummaryBoundary({
+          existing: readSummaryBoundary(canonicalState),
+          messages: pruned.messages,
+          keepRecentToolResults: config.prune.keepRecentToolResults,
+          source: "compact",
+        }),
         contextSafeSessionIndex: buildContextSafeSessionIndex({
           messages: pruned.messages,
         }),
@@ -245,6 +253,7 @@ async function synchronizeCanonicalState(params: {
         configSnapshot: params.pruneConfig,
         messages: normalized.messages,
         runtimeChurnMetadata: mergeRuntimeChurnMetadata(undefined, normalized.runtimeChurn),
+        summaryBoundary: readSummaryBoundary(loaded.state),
         contextSafeSessionIndex: buildContextSafeSessionIndex({
           messages: normalized.messages,
         }),
@@ -290,6 +299,10 @@ async function synchronizeCanonicalState(params: {
     changed = true;
   }
 
+  if (!loaded.state.summaryBoundary) {
+    changed = true;
+  }
+
   return {
     state: createCanonicalSessionState({
       sessionId: loaded.state.sessionId,
@@ -299,6 +312,7 @@ async function synchronizeCanonicalState(params: {
       messages,
       pruneMetadata: readPruneMetadata(loaded.state),
       runtimeChurnMetadata,
+      summaryBoundary: readSummaryBoundary(loaded.state),
       contextSafeSessionIndex: buildContextSafeSessionIndex({
         messages,
       }),
@@ -510,6 +524,12 @@ function maybePruneCanonicalState(params: {
         thresholdChars: params.pruneConfig.thresholdChars,
       }),
       runtimeChurnMetadata: readRuntimeChurnMetadata(params.state),
+      summaryBoundary: buildSummaryBoundary({
+        existing: readSummaryBoundary(params.state),
+        messages: pruned.messages,
+        keepRecentToolResults: params.pruneConfig.keepRecentToolResults,
+        source: params.source,
+      }),
       contextSafeSessionIndex: buildContextSafeSessionIndex({
         messages: pruned.messages,
       }),
@@ -600,6 +620,75 @@ function createPruneMetadata(params: {
     lastPruneGain: params.pruneGain,
     lastThresholdChars: params.thresholdChars,
   };
+}
+
+function buildSummaryBoundary(params: {
+  existing?: CanonicalSessionSummaryBoundary;
+  messages: ContextSafeMessage[];
+  keepRecentToolResults: number;
+  source: "assemble" | "compact";
+}): CanonicalSessionSummaryBoundary {
+  const now = new Date().toISOString();
+  const boundary: CanonicalSessionSummaryBoundary = {
+    ...(params.existing ? structuredClone(params.existing) : {}),
+    lastSummarizedAt: now,
+    lastSummarySource: params.source,
+  };
+  const preservedTailStart = resolveFixedPreservedTailStartIndex(
+    params.messages,
+    params.keepRecentToolResults,
+  );
+  if (preservedTailStart === undefined) {
+    return boundary;
+  }
+  const preservedTailHeadId = resolveContextSafeMessageId(params.messages[preservedTailStart]);
+  const lastSummarizedMessageId =
+    preservedTailStart > 0
+      ? resolveContextSafeMessageId(params.messages[preservedTailStart - 1])
+      : undefined;
+  return {
+    ...boundary,
+    ...(lastSummarizedMessageId ? { lastSummarizedMessageId } : {}),
+    ...(preservedTailHeadId ? { preservedTailHeadId } : {}),
+  };
+}
+
+function resolveFixedPreservedTailStartIndex(
+  messages: ContextSafeMessage[],
+  keepRecentToolResults: number,
+): number | undefined {
+  if (messages.length === 0 || keepRecentToolResults <= 0) {
+    return undefined;
+  }
+  return Math.max(0, messages.length - keepRecentToolResults);
+}
+
+function resolveContextSafeMessageId(message: ContextSafeMessage | undefined): string | undefined {
+  if (!message) {
+    return undefined;
+  }
+  const direct =
+    asTrimmedString(message.id) ??
+    asTrimmedString(message.messageId) ??
+    asTrimmedString(message.message_id) ??
+    asTrimmedString(message.toolCallId) ??
+    asTrimmedString(message.tool_call_id);
+  if (direct) {
+    return direct;
+  }
+  if (isRecord(message.message)) {
+    return asTrimmedString(message.message.id);
+  }
+  return undefined;
+}
+
+function readSummaryBoundary(
+  state: CanonicalSessionState | undefined,
+): CanonicalSessionSummaryBoundary | undefined {
+  if (!state?.summaryBoundary || !isRecord(state.summaryBoundary)) {
+    return state?.summaryBoundary;
+  }
+  return structuredClone(state.summaryBoundary);
 }
 
 function readPruneMetadata(state: CanonicalSessionState): CanonicalSessionPruneMetadata | undefined {
@@ -708,6 +797,14 @@ function estimateAssembledTokens(messages: ContextSafeMessage[], tokenBudget?: n
     contextWindowTokens: Math.max(1, Math.floor(tokenBudget ?? 0)),
   });
   return Math.max(1, Math.ceil(result.estimatedChars / 4));
+}
+
+function asTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

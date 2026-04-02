@@ -11,6 +11,8 @@ const CANONICAL_SESSION_STATE_VERSION = 1;
 
 type CanonicalSessionPruneSource = "afterTurn" | "assemble" | "compact";
 
+type CanonicalSessionSummarySource = "assemble" | "compact" | "manual";
+
 export type CanonicalSessionPruneMetadata = {
   lastPrunedAt: string;
   lastPruneSource: CanonicalSessionPruneSource;
@@ -21,6 +23,13 @@ export type CanonicalSessionPruneMetadata = {
 export type CanonicalSessionRuntimeChurnMetadata = {
   normalizedRuntimeChurnCount: number;
   lastRuntimeChurnKinds: RuntimeChurnKind[];
+};
+
+export type CanonicalSessionSummaryBoundary = {
+  lastSummarizedMessageId?: string;
+  lastSummarizedAt?: string;
+  lastSummarySource?: CanonicalSessionSummarySource;
+  preservedTailHeadId?: string;
 };
 
 export type CanonicalSessionState = {
@@ -36,6 +45,7 @@ export type CanonicalSessionState = {
   thresholdChars: number;
   keepRecentToolResults: number;
   placeholder: string;
+  summaryBoundary?: CanonicalSessionSummaryBoundary;
   contextSafeSessionIndex?: ContextSafeSessionIndex;
   contextSafeStats?: ContextSafeSessionStats;
 } & Partial<CanonicalSessionPruneMetadata> &
@@ -76,9 +86,13 @@ export async function saveCanonicalSessionState(state: CanonicalSessionState): P
     directory,
     `${path.basename(statePath, ".json")}.${process.pid}.${Date.now()}.tmp`,
   );
+  const normalizedState: CanonicalSessionState = {
+    ...state,
+    summaryBoundary: normalizeSummaryBoundary(state.summaryBoundary),
+  };
 
   await fs.mkdir(directory, { recursive: true });
-  await fs.writeFile(tempPath, JSON.stringify(state, null, 2), "utf8");
+  await fs.writeFile(tempPath, JSON.stringify(normalizedState, null, 2), "utf8");
   await fs.rename(tempPath, statePath);
 
   return { path: statePath };
@@ -100,6 +114,7 @@ export function createCanonicalSessionState(params: {
   messages: ContextSafeMessage[];
   pruneMetadata?: CanonicalSessionPruneMetadata;
   runtimeChurnMetadata?: CanonicalSessionRuntimeChurnMetadata;
+  summaryBoundary?: CanonicalSessionSummaryBoundary;
   contextSafeSessionIndex?: ContextSafeSessionIndex;
   contextSafeStats?: ContextSafeSessionStats;
 }): CanonicalSessionState {
@@ -107,6 +122,7 @@ export function createCanonicalSessionState(params: {
   const runtimeChurnMetadata = params.runtimeChurnMetadata
     ? normalizeRuntimeChurnMetadata(params.runtimeChurnMetadata)
     : undefined;
+  const summaryBoundary = normalizeSummaryBoundary(params.summaryBoundary);
   return {
     version: CANONICAL_SESSION_STATE_VERSION,
     sessionId: params.sessionId,
@@ -120,6 +136,7 @@ export function createCanonicalSessionState(params: {
     thresholdChars: params.configSnapshot.thresholdChars,
     keepRecentToolResults: params.configSnapshot.keepRecentToolResults,
     placeholder: params.configSnapshot.placeholder,
+    summaryBoundary,
     ...(params.contextSafeSessionIndex
       ? { contextSafeSessionIndex: structuredClone(params.contextSafeSessionIndex) }
       : {}),
@@ -153,6 +170,7 @@ function isCanonicalSessionState(value: unknown): value is CanonicalSessionState
     isOptionalPositiveInteger(value.thresholdChars) &&
     isOptionalNonNegativeInteger(value.keepRecentToolResults) &&
     isOptionalNonEmptyString(value.placeholder) &&
+    isOptionalSummaryBoundary(value.summaryBoundary) &&
     isOptionalContextSafeSessionIndex(value.contextSafeSessionIndex) &&
     isOptionalContextSafeSessionStats(value.contextSafeStats) &&
     isOptionalIsoTimestamp(value.lastPrunedAt) &&
@@ -191,12 +209,47 @@ function normalizeRuntimeChurnMetadata(
   };
 }
 
+function normalizeSummaryBoundary(
+  value?: CanonicalSessionSummaryBoundary,
+): CanonicalSessionSummaryBoundary {
+  if (!value) {
+    return {};
+  }
+  return {
+    ...(typeof value.lastSummarizedMessageId === "string"
+      ? { lastSummarizedMessageId: value.lastSummarizedMessageId }
+      : {}),
+    ...(typeof value.lastSummarizedAt === "string"
+      ? { lastSummarizedAt: value.lastSummarizedAt }
+      : {}),
+    ...(value.lastSummarySource
+      ? { lastSummarySource: value.lastSummarySource }
+      : {}),
+    ...(typeof value.preservedTailHeadId === "string"
+      ? { preservedTailHeadId: value.preservedTailHeadId }
+      : {}),
+  };
+}
+
 function isOptionalIsoTimestamp(value: unknown): boolean {
   return value === undefined || (typeof value === "string" && value.length > 0);
 }
 
 function isOptionalNonEmptyString(value: unknown): boolean {
   return value === undefined || (typeof value === "string" && value.length > 0);
+}
+
+function isOptionalSummaryBoundary(value: unknown): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  return (
+    isRecord(value) &&
+    isOptionalNonEmptyString(value.lastSummarizedMessageId) &&
+    isOptionalIsoTimestamp(value.lastSummarizedAt) &&
+    isOptionalSummarySource(value.lastSummarySource) &&
+    isOptionalNonEmptyString(value.preservedTailHeadId)
+  );
 }
 
 function isOptionalPositiveInteger(value: unknown): boolean {
@@ -212,6 +265,10 @@ function isOptionalNonNegativeInteger(value: unknown): boolean {
 
 function isOptionalPruneSource(value: unknown): value is CanonicalSessionPruneSource | undefined {
   return value === undefined || value === "afterTurn" || value === "assemble" || value === "compact";
+}
+
+function isOptionalSummarySource(value: unknown): value is CanonicalSessionSummarySource | undefined {
+  return value === undefined || value === "assemble" || value === "compact" || value === "manual";
 }
 
 function isOptionalRuntimeChurnKinds(value: unknown): value is RuntimeChurnKind[] | undefined {

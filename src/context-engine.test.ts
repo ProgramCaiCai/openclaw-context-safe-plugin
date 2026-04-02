@@ -396,6 +396,51 @@ describe("createContextSafeContextEngine", () => {
       reason: "context-safe canonical transcript already minimal",
     });
   });
+  it("persists a summary-boundary object when legacy canonical state did not have one", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-legacy-summary-boundary";
+    const rawMessages = [
+      { role: "user", content: "Goal: rebuild summary-boundary metadata." },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Conclusion: legacy state loaded." }],
+      },
+    ];
+
+    fs.mkdirSync(path.dirname(canonicalStatePath(sessionId)), { recursive: true });
+    fs.writeFileSync(
+      canonicalStatePath(sessionId),
+      JSON.stringify(
+        {
+          version: 1,
+          sessionId,
+          sourceMessageCount: rawMessages.length,
+          configSnapshot: {
+            thresholdChars: 100_000,
+            keepRecentToolResults: 5,
+            placeholder: "[pruned]",
+          },
+          messages: rawMessages,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await engine.assemble({
+      sessionId,
+      messages: rawMessages,
+      tokenBudget: 512,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      summaryBoundary?: Record<string, unknown>;
+    };
+
+    expect(savedState.summaryBoundary).toEqual({});
+  });
+
   it("prunes canonical transcript during assemble when the default threshold gain exceeds 100000", async () => {
     const info = vi.fn();
     const engine = createContextSafeContextEngine({
