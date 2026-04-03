@@ -92,6 +92,16 @@ describe("createContextSafeContextEngine", () => {
       placeholder?: string;
       normalizedRuntimeChurnCount?: number;
       lastRuntimeChurnKinds?: string[];
+      contextSafeStats?: {
+        artifactizedCount?: number;
+        artifactFallbackCount?: number;
+        detailsCompactedCount?: number;
+        detailsCollapsedCount?: number;
+        compactedDetailsCharsRemoved?: number;
+        prunedChars?: number;
+        pruneReasons?: Record<string, number>;
+        topToolOffenders?: unknown[];
+      };
       messages: Array<{ role?: string }>;
     };
 
@@ -103,7 +113,250 @@ describe("createContextSafeContextEngine", () => {
     expect(savedState.placeholder).toBe("[pruned]");
     expect(savedState.normalizedRuntimeChurnCount).toBe(0);
     expect(savedState.lastRuntimeChurnKinds).toEqual([]);
+    expect(savedState.contextSafeStats).toEqual({
+      artifactizedCount: 0,
+      artifactFallbackCount: 0,
+      detailsCompactedCount: 0,
+      detailsCollapsedCount: 0,
+      compactedDetailsCharsRemoved: 0,
+      prunedChars: 0,
+      pruneReasons: {
+        assemble: 0,
+        afterTurn: 0,
+        compact: 0,
+      },
+      topToolOffenders: [
+        {
+          toolName: "read",
+          messageCount: 1,
+          approxChars: expect.any(Number),
+          artifactizedCount: 0,
+          artifactFallbackCount: 0,
+          detailsCompactedCount: 0,
+        },
+      ],
+    });
     expect(savedState.messages).toHaveLength(messages.length);
+  });
+
+  it("persists bounded context-safe stats derived from persisted tool-result metadata", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-context-safe-stats";
+
+    await engine.assemble({
+      sessionId,
+      messages: [
+        { role: "user", content: "inspect the artifacts" },
+        {
+          role: "toolResult",
+          toolName: "read",
+          content: [{ type: "text", text: "artifact preview" }],
+          details: {
+            contextSafe: {
+              resultMode: "artifact",
+              outputFile: "/tmp/read-artifact.json",
+              originalTextChars: 6_000,
+              originalDetailsChars: 1_500,
+            },
+          },
+        },
+        {
+          role: "toolResult",
+          toolName: "exec",
+          content: [{ type: "text", text: "fallback preview" }],
+          details: {
+            contextSafe: {
+              resultMode: "inline-fallback",
+              artifactWriteFailed: true,
+              detailsCompacted: true,
+              detailsCollapsed: true,
+              originalChars: 8_500,
+            },
+          },
+        },
+      ],
+      tokenBudget: 1000,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      contextSafeStats?: {
+        artifactizedCount?: number;
+        artifactFallbackCount?: number;
+        detailsCompactedCount?: number;
+        detailsCollapsedCount?: number;
+        compactedDetailsCharsRemoved?: number;
+        prunedChars?: number;
+        pruneReasons?: Record<string, number>;
+        topToolOffenders?: Array<{
+          toolName?: string;
+          approxChars?: number;
+          messageCount?: number;
+        }>;
+      };
+    };
+
+    expect(savedState.contextSafeStats?.artifactizedCount).toBe(1);
+    expect(savedState.contextSafeStats?.artifactFallbackCount).toBe(1);
+    expect(savedState.contextSafeStats?.detailsCompactedCount).toBe(1);
+    expect(savedState.contextSafeStats?.detailsCollapsedCount).toBe(1);
+    expect(savedState.contextSafeStats?.compactedDetailsCharsRemoved).toBeGreaterThan(0);
+    expect(savedState.contextSafeStats?.prunedChars).toBe(0);
+    expect(savedState.contextSafeStats?.pruneReasons).toEqual({
+      assemble: 0,
+      afterTurn: 0,
+      compact: 0,
+    });
+    expect(savedState.contextSafeStats?.topToolOffenders).toEqual([
+      expect.objectContaining({
+        toolName: "exec",
+        messageCount: 1,
+        approxChars: expect.any(Number),
+      }),
+      expect.objectContaining({
+        toolName: "read",
+        messageCount: 1,
+        approxChars: expect.any(Number),
+      }),
+    ]);
+  });
+
+  it("injects a bounded synthetic session index message during assemble", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-index-assemble";
+
+    const result = await engine.assemble({
+      sessionId,
+      messages: [
+        {
+          role: "user",
+          content:
+            "Goal: keep recovery hints easy to find. Plan: docs/plans/context-safe/assemble-plan.md",
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Conclusion: indexing is ready for assemble." }],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Next: inject the synthetic summary carefully." }],
+        },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: "Recovery note: reread SOUL.md and review reports/context-safe/assemble/evidence.md.",
+            },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolName: "exec",
+          content: [{ type: "text", text: "artifact preview" }],
+          details: {
+            contextSafe: {
+              resultMode: "artifact",
+              outputFile: "/tmp/assemble-index-artifact.json",
+            },
+          },
+        },
+      ],
+      tokenBudget: 1000,
+    });
+
+    expect(textOf(result.messages[0])).toContain("[context-safe session index]");
+    expect(textOf(result.messages[0])).toContain("Goal: keep recovery hints easy to find.");
+    expect(textOf(result.messages[0])).toContain("/tmp/assemble-index-artifact.json");
+    expect(textOf(result.messages[0])).toContain("Active plans:");
+    expect(textOf(result.messages[0])).toContain("Recent reports:");
+    expect(textOf(result.messages[0])).toContain("Protected reads:");
+    expect(result.messages.slice(1).map((message) => textOf(message))).toContain(
+      "Goal: keep recovery hints easy to find. Plan: docs/plans/context-safe/assemble-plan.md",
+    );
+  });
+
+  it("falls back to a compact session index representation when the injection budget is tighter", async () => {
+    const engine = createContextSafeContextEngine();
+
+    const result = await engine.assemble({
+      sessionId: "session-index-assemble-compact",
+      messages: [
+        {
+          role: "user",
+          content:
+            "Goal: keep recovery hints easy to find. Plan: docs/plans/context-safe/assemble-plan.md",
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Conclusion: indexing is ready for assemble." }],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Next: inject the synthetic summary carefully." }],
+        },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: "Recovery note: reread SOUL.md and review reports/context-safe/assemble/evidence.md.",
+            },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolName: "exec",
+          content: [{ type: "text", text: "artifact preview" }],
+          details: {
+            contextSafe: {
+              resultMode: "artifact",
+              outputFile: "/tmp/assemble-index-artifact.json",
+            },
+          },
+        },
+      ],
+      tokenBudget: 384,
+    });
+
+    expect(textOf(result.messages[0])).toContain("[context-safe session index]");
+    expect(textOf(result.messages[0])).toContain("Goal: keep recovery hints easy to find.");
+    expect(textOf(result.messages[0])).toContain("Plan: docs/plans/context-safe/assemble-plan.md");
+    expect(textOf(result.messages[0])).not.toContain("Protected reads:");
+    expect(textOf(result.messages[0])).not.toContain("Recent reports:");
+  });
+
+  it("skips the synthetic session index when it would crowd out already-fitting context", async () => {
+    const engine = createContextSafeContextEngine();
+
+    const result = await engine.assemble({
+      sessionId: "session-index-tight-budget",
+      messages: [
+        { role: "user", content: "Goal: keep recent read output visible." },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Conclusion: the session index helps recovery." }],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Next: inject it only with headroom." }],
+        },
+        {
+          role: "toolResult",
+          toolName: "read",
+          content: [{ type: "text", text: "r".repeat(40) }],
+          details: {
+            contextSafe: {
+              resultMode: "inline",
+            },
+          },
+        },
+      ],
+      tokenBudget: 36,
+    });
+
+    expect(textOf(result.messages[0])).toBe("Goal: keep recent read output visible.");
+    expect(result.messages.map((message) => textOf(message))).not.toContain("[context-safe session index]");
+    expect(textOf(result.messages.at(-1))).toBe("r".repeat(40));
   });
 
   it("records runtime-churn observability counts, kinds, and logs when normalization happens", async () => {
@@ -177,7 +430,7 @@ describe("createContextSafeContextEngine", () => {
       tokenBudget: 30_000,
     });
 
-    expect(countThinkingBlocks(assembled.messages)).toBe(1);
+    expect(countThinkingBlocks(assembled.messages)).toBe(0);
     expect(toolResultTexts(assembled.messages)).toEqual([
       "[pruned]",
       "[pruned]",
@@ -186,6 +439,119 @@ describe("createContextSafeContextEngine", () => {
     ]);
     expect(info).toHaveBeenCalledWith(expect.stringContaining("context-safe prune triggered"));
     expect(info).toHaveBeenCalledWith(expect.stringContaining("source=compact"));
+  });
+
+  it("moves the compact preserved-tail boundary backward so it does not start with an orphan tool result", async () => {
+    const engine = createContextSafeContextEngine({
+      prune: {
+        thresholdChars: 1,
+        keepRecentToolResults: 1,
+        placeholder: "[pruned]",
+      },
+    });
+    const sessionId = "session-compact-api-invariants";
+    const sessionFile = path.join(artifactDir, "manual-compact-api-invariants.jsonl");
+    writeTranscript(sessionFile, [
+      { role: "user", content: "summarize the run" },
+      {
+        role: "assistant",
+        id: "assistant-legacy-thinking",
+        content: [{ type: "thinking", thinking: "t".repeat(30_000) }],
+      },
+      {
+        role: "assistant",
+        id: "assistant-call-1",
+        content: [
+          {
+            type: "tool_use",
+            name: "read",
+            id: "call-1",
+            input: { path: "/tmp/plan.md" },
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        id: "tool-result-call-1",
+        toolName: "read",
+        toolCallId: "call-1",
+        content: [{ type: "text", text: "recent tool result" }],
+      },
+    ]);
+
+    const compactResult = await engine.compact({
+      sessionId,
+      sessionFile,
+      tokenBudget: 30_000,
+      force: true,
+    });
+
+    expect(compactResult.ok).toBe(true);
+    expect(compactResult.compacted).toBe(true);
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      summaryBoundary?: {
+        preservedTailHeadId?: string;
+      };
+    };
+
+    expect(savedState.summaryBoundary?.preservedTailHeadId).toBe("assistant-call-1");
+  });
+
+  it("uses semantic preserved-tail settings to anchor the summary boundary before the last fixed tool-result window", async () => {
+    const engine = createContextSafeContextEngine({
+      prune: {
+        thresholdChars: 1,
+        keepRecentToolResults: 1,
+        keepTailMinChars: 120,
+        keepTailMinUserAssistantMessages: 2,
+        keepTailMaxChars: 8_000,
+        placeholder: "[pruned]",
+      },
+    });
+    const sessionId = "session-semantic-preserved-tail";
+
+    await engine.assemble({
+      sessionId,
+      messages: [
+        {
+          role: "assistant",
+          id: "assistant-legacy-thinking",
+          content: [{ type: "thinking", thinking: "t".repeat(20_000) }],
+        },
+        {
+          role: "user",
+          id: "user-turn-1",
+          content: "Need the preserved tail to keep the latest exchange stable.",
+        },
+        {
+          role: "assistant",
+          id: "assistant-turn-1",
+          content: [{ type: "text", text: "Working through the final verification." }],
+        },
+        {
+          role: "toolResult",
+          toolName: "exec",
+          toolCallId: "tail-burst-1",
+          content: [{ type: "text", text: "x".repeat(900) }],
+        },
+        {
+          role: "toolResult",
+          toolName: "read",
+          toolCallId: "tail-burst-2",
+          content: [{ type: "text", text: "y".repeat(900) }],
+        },
+      ],
+      tokenBudget: 30_000,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      summaryBoundary?: {
+        preservedTailHeadId?: string;
+      };
+    };
+
+    expect(savedState.summaryBoundary?.preservedTailHeadId).toBe("user-turn-1");
   });
 
   it("skips manual compact when the canonical transcript has nothing worth pruning", async () => {
@@ -209,6 +575,145 @@ describe("createContextSafeContextEngine", () => {
       reason: "context-safe canonical transcript already minimal",
     });
   });
+
+  it("tracks repeated compact no-ops and trips a circuit breaker", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-compact-noop-circuit-breaker";
+    const sessionFile = path.join(artifactDir, "manual-compact-noop-circuit-breaker.jsonl");
+    writeTranscript(sessionFile, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: [{ type: "text", text: "world" }] },
+    ]);
+
+    for (let i = 0; i < 3; i++) {
+      await expect(
+        engine.compact({
+          sessionId,
+          sessionFile,
+          tokenBudget: 30_000,
+          force: true,
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        compacted: false,
+      });
+    }
+
+    const blockedResult = await engine.compact({
+      sessionId,
+      sessionFile,
+      tokenBudget: 30_000,
+      force: true,
+    });
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      consecutiveCompactNoops?: number;
+      lastCompactReason?: string;
+    };
+
+    expect(savedState.consecutiveCompactNoops).toBe(3);
+    expect(savedState.lastCompactReason).toContain("already minimal");
+    expect(blockedResult.reason).toContain("circuit breaker");
+  });
+
+  it("resets compact no-op tracking after a meaningful compact succeeds", async () => {
+    const engine = createContextSafeContextEngine({
+      prune: {
+        thresholdChars: 100_000,
+        keepRecentToolResults: 2,
+        placeholder: "[pruned]",
+      },
+    });
+    const sessionId = "session-compact-noop-reset";
+    const sessionFile = path.join(artifactDir, "manual-compact-noop-reset.jsonl");
+    writeTranscript(sessionFile, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: [{ type: "text", text: "world" }] },
+    ]);
+
+    await engine.compact({
+      sessionId,
+      sessionFile,
+      tokenBudget: 30_000,
+      force: true,
+    });
+    await engine.compact({
+      sessionId,
+      sessionFile,
+      tokenBudget: 30_000,
+      force: true,
+    });
+
+    writeTranscript(
+      sessionFile,
+      canonicalMessages({
+        thinkingChars: 16_000,
+        thinkingOnlyChars: 16_000,
+        oldToolTextChars: 9_000,
+        oldToolDetailsChars: 5_000,
+      }),
+    );
+
+    const compactedResult = await engine.compact({
+      sessionId,
+      sessionFile,
+      tokenBudget: 30_000,
+      force: true,
+    });
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      consecutiveCompactNoops?: number;
+      lastCompactReason?: string;
+    };
+
+    expect(compactedResult.compacted).toBe(true);
+    expect(savedState.consecutiveCompactNoops).toBe(0);
+    expect(savedState.lastCompactReason).toContain("compact prune gain");
+  });
+
+  it("persists a summary-boundary object when legacy canonical state did not have one", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-legacy-summary-boundary";
+    const rawMessages = [
+      { role: "user", content: "Goal: rebuild summary-boundary metadata." },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Conclusion: legacy state loaded." }],
+      },
+    ];
+
+    fs.mkdirSync(path.dirname(canonicalStatePath(sessionId)), { recursive: true });
+    fs.writeFileSync(
+      canonicalStatePath(sessionId),
+      JSON.stringify(
+        {
+          version: 1,
+          sessionId,
+          sourceMessageCount: rawMessages.length,
+          configSnapshot: {
+            thresholdChars: 100_000,
+            keepRecentToolResults: 5,
+            placeholder: "[pruned]",
+          },
+          messages: rawMessages,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await engine.assemble({
+      sessionId,
+      messages: rawMessages,
+      tokenBudget: 512,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      summaryBoundary?: Record<string, unknown>;
+    };
+
+    expect(savedState.summaryBoundary).toEqual({});
+  });
+
   it("prunes canonical transcript during assemble when the default threshold gain exceeds 100000", async () => {
     const info = vi.fn();
     const engine = createContextSafeContextEngine({
@@ -226,18 +731,18 @@ describe("createContextSafeContextEngine", () => {
       tokenBudget: 30_000,
     });
 
-    expect(countThinkingBlocks(result.messages)).toBe(2);
+    expect(countThinkingBlocks(result.messages)).toBe(1);
     expect(toolResultTexts(result.messages)).toEqual([
-      "head protected tool result 1",
-      "head protected tool result 2",
+      "[pruned]",
+      "[pruned]",
       "[pruned]",
       "[pruned]",
       "tail protected tool result 1",
       "tail protected tool result 2",
     ]);
     expect(toolResultDetails(result.messages)).toEqual([
-      { raw: "h".repeat(10_000) },
-      { raw: "i".repeat(10_000) },
+      undefined,
+      undefined,
       undefined,
       undefined,
       undefined,
@@ -257,7 +762,7 @@ describe("createContextSafeContextEngine", () => {
     });
     const customEngine = createContextSafeContextEngine({
       prune: {
-        thresholdChars: 25_000,
+        thresholdChars: 7_500,
         keepRecentToolResults: 2,
         placeholder: "[pruned]",
       },
@@ -297,13 +802,13 @@ describe("createContextSafeContextEngine", () => {
     expect(countThinkingBlocks(customResult.messages)).toBe(1);
     expect(toolResultTexts(customResult.messages)).toEqual([
       "[pruned]",
-      "[pruned]",
+      "b".repeat(5_000),
       "recent tool result 1",
       "recent tool result 2",
     ]);
     expect(toolResultDetails(customResult.messages)).toEqual([
       undefined,
-      undefined,
+      { raw: "e".repeat(2_000) },
       undefined,
       undefined,
     ]);
@@ -332,7 +837,7 @@ describe("createContextSafeContextEngine", () => {
     });
 
     expect(fs.existsSync(canonicalStatePath(sessionId))).toBe(true);
-    expect(countThinkingBlocks(firstResult.messages)).toBe(1);
+    expect(countThinkingBlocks(firstResult.messages)).toBe(0);
     expect(toolResultTexts(firstResult.messages)).toEqual([
       "[pruned]",
       "[pruned]",
@@ -398,7 +903,7 @@ describe("createContextSafeContextEngine", () => {
       tokenBudget: 30_000,
     });
 
-    expect(countThinkingBlocks(thirdResult.messages)).toBe(1);
+    expect(countThinkingBlocks(thirdResult.messages)).toBe(0);
     expect(toolResultTexts(thirdResult.messages)).toEqual([
       "[pruned]",
       "[pruned]",
@@ -460,6 +965,78 @@ describe("createContextSafeContextEngine", () => {
     ]);
   });
 
+  it("updates the bounded session index after afterTurn appends new canonical messages", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-index-after-turn";
+    const baseMessages = [
+      { role: "user", content: "Goal: land the session index safely." },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Conclusion: the fallback path is stable." }],
+      },
+    ];
+    const postTurnMessages = [
+      ...baseMessages,
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Next: thread the session index through assemble." }],
+      },
+      {
+        role: "toolResult",
+        toolName: "exec",
+        content: [{ type: "text", text: "preview" }],
+        details: {
+          contextSafe: {
+            resultMode: "artifact",
+            outputFile: "/tmp/session-index-artifact.json",
+          },
+        },
+      },
+    ];
+
+    await engine.assemble({
+      sessionId,
+      messages: baseMessages,
+      tokenBudget: 512,
+    });
+    await engine.afterTurn({
+      sessionId,
+      sessionFile: "/tmp/session-index.jsonl",
+      messages: postTurnMessages,
+      prePromptMessageCount: baseMessages.length,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      contextSafeSessionIndex?: {
+        goals?: string[];
+        recentConclusions?: string[];
+        openThreads?: string[];
+        keyArtifacts?: Array<{ pointer?: string }>;
+        activePlans?: string[];
+        protectedReads?: string[];
+        recentReports?: string[];
+      };
+    };
+
+    expect(savedState.contextSafeSessionIndex).toEqual({
+      goals: ["Goal: land the session index safely."],
+      recentConclusions: ["Conclusion: the fallback path is stable."],
+      openThreads: ["Next: thread the session index through assemble."],
+      keyArtifacts: [
+        {
+          toolName: "exec",
+          resultMode: "artifact",
+          pointer: "/tmp/session-index-artifact.json",
+          preview: "preview",
+        },
+      ],
+      activePlans: [],
+      protectedReads: [],
+      recentReports: [],
+      recoveryHints: [expect.stringContaining("rerun a narrower command")],
+    });
+  });
+
   it("prunes and persists canonical state during afterTurn for growth-heavy final turns", async () => {
     const info = vi.fn();
     const engine = createContextSafeContextEngine({
@@ -501,6 +1078,10 @@ describe("createContextSafeContextEngine", () => {
       lastPruneSource?: string;
       lastPruneGain?: number;
       lastThresholdChars?: number;
+      contextSafeStats?: {
+        prunedChars?: number;
+        pruneReasons?: Record<string, number>;
+      };
       messages: Array<{ role?: string; content?: unknown; details?: unknown }>;
     };
 
@@ -508,7 +1089,15 @@ describe("createContextSafeContextEngine", () => {
     expect(savedState.lastPruneSource).toBe("afterTurn");
     expect(savedState.lastPruneGain).toBeGreaterThan(0);
     expect(savedState.lastThresholdChars).toBe(50_000);
-    expect(countThinkingBlocks(savedState.messages)).toBe(1);
+    expect(savedState.contextSafeStats?.prunedChars).toBeGreaterThanOrEqual(
+      savedState.lastPruneGain ?? 0,
+    );
+    expect(savedState.contextSafeStats?.pruneReasons).toEqual({
+      assemble: 1,
+      afterTurn: 1,
+      compact: 0,
+    });
+    expect(countThinkingBlocks(savedState.messages)).toBe(0);
     expect(toolResultTexts(savedState.messages)).toEqual([
       "[pruned]",
       "[pruned]",
@@ -531,6 +1120,63 @@ describe("createContextSafeContextEngine", () => {
     ]);
     expect(info).toHaveBeenCalledWith(expect.stringContaining("context-safe prune triggered"));
     expect(info).toHaveBeenCalledWith(expect.stringContaining("source=afterTurn"));
+  });
+
+  it("rebuilds missing session index data from older saved state files", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-index-legacy-rebuild";
+    const rawMessages = [
+      { role: "user", content: "Goal: rebuild the missing index." },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Conclusion: legacy state loaded." }],
+      },
+    ];
+
+    fs.mkdirSync(path.dirname(canonicalStatePath(sessionId)), { recursive: true });
+    fs.writeFileSync(
+      canonicalStatePath(sessionId),
+      JSON.stringify(
+        {
+          version: 1,
+          sessionId,
+          sourceMessageCount: rawMessages.length,
+          configSnapshot: {
+            thresholdChars: 100_000,
+            keepRecentToolResults: 5,
+            placeholder: "[pruned]",
+          },
+          messages: rawMessages,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await engine.assemble({
+      sessionId,
+      messages: rawMessages,
+      tokenBudget: 512,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      contextSafeSessionIndex?: {
+        goals?: string[];
+        recentConclusions?: string[];
+      };
+    };
+
+    expect(savedState.contextSafeSessionIndex).toEqual({
+      goals: ["Goal: rebuild the missing index."],
+      recentConclusions: ["Conclusion: legacy state loaded."],
+      openThreads: [],
+      keyArtifacts: [],
+      activePlans: [],
+      protectedReads: [],
+      recentReports: [],
+      recoveryHints: [],
+    });
   });
 
   it("persists compact child-completion summaries instead of raw injected blobs", async () => {
@@ -581,10 +1227,13 @@ describe("createContextSafeContextEngine", () => {
       tokenBudget: 512,
     });
 
-    expect(textOf(secondResult.messages[1] as { content?: unknown })).toContain(
-      "Child task completion (success): runtime-churn-slimming",
-    );
-    expect(textOf(secondResult.messages[1] as { content?: unknown })).not.toContain(
+    const secondTexts = secondResult.messages.map((message) => textOf(message));
+    expect(
+      secondTexts.find((text) =>
+        text.includes("Child task completion (success): runtime-churn-slimming"),
+      ),
+    ).toContain("Child task completion (success): runtime-churn-slimming");
+    expect(secondTexts.join("\n")).not.toContain(
       "RAW UPSTREAM HISTORY SHOULD NOT REPLACE THE CANONICAL SUMMARY",
     );
   });
@@ -615,6 +1264,32 @@ describe("createContextSafeContextEngine", () => {
     expect(textOf(savedState.messages[1])).not.toContain(
       "Conversation info (untrusted metadata)",
     );
+  });
+
+  it("normalizes newly appended Feishu direct-chat metadata during afterTurn sync", async () => {
+    const engine = createContextSafeContextEngine();
+    const sessionId = "session-runtime-churn-feishu";
+    const baseMessages = [{ role: "assistant", content: [{ type: "text", text: "ready" }] }];
+    const finalMessages = [...baseMessages, feishuDirectChatMetadataMessage()];
+
+    await engine.assemble({
+      sessionId,
+      messages: baseMessages,
+      tokenBudget: 512,
+    });
+    await engine.afterTurn({
+      sessionId,
+      sessionFile: "/tmp/runtime-churn-feishu.jsonl",
+      messages: finalMessages,
+      prePromptMessageCount: baseMessages.length,
+    });
+
+    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      messages: Array<{ content?: unknown }>;
+    };
+    expect(textOf(savedState.messages[1])).toContain("Feishu direct chat metadata");
+    expect(textOf(savedState.messages[1])).toContain("请基于上一轮结果继续。");
+    expect(textOf(savedState.messages[1])).not.toContain("会话信息（不可信元数据）");
   });
 
   it("persists report-aware summaries in canonical state after sync", async () => {
@@ -673,79 +1348,169 @@ describe("createContextSafeContextEngine", () => {
     expect(textOf(savedState.messages[1])).not.toContain("extra noisy bullet should be dropped");
   });
 
-  it("preserves repeated direct-chat wrapped user turns instead of dropping later turns", async () => {
+  it("slims direct-chat wrapper history more than a modest background-subagent transcript", async () => {
     const engine = createContextSafeContextEngine();
-    const sessionId = "session-mode-direct-preserve";
+    const directSessionId = "session-mode-direct-slim";
+    const backgroundSessionId = "session-mode-background-modest";
 
     await engine.assemble({
-      sessionId,
+      sessionId: directSessionId,
       messages: [
-        telegramDirectChatMetadataMessage("Please continue from the last result."),
-        telegramDirectChatMetadataMessage("Please continue with the newest DM context."),
+        telegramDirectChatMetadataMessage(),
+        telegramDirectChatMetadataMessage(),
+        telegramDirectChatMetadataMessage(),
+      ],
+      tokenBudget: 512,
+    });
+    await engine.assemble({
+      sessionId: backgroundSessionId,
+      messages: [
+        backgroundProgressChatterMessage("status: still working"),
+        backgroundCompletionResidueMessage(
+          "background-modest",
+          "reports/context-safe-background-modest-2026-03-24/index.md",
+        ),
       ],
       tokenBudget: 512,
     });
 
-    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+    const directState = JSON.parse(fs.readFileSync(canonicalStatePath(directSessionId), "utf8")) as {
+      sessionMode?: string;
+      messages: Array<{ content?: unknown }>;
+    };
+    const backgroundState = JSON.parse(
+      fs.readFileSync(canonicalStatePath(backgroundSessionId), "utf8"),
+    ) as {
+      sessionMode?: string;
       messages: Array<{ content?: unknown }>;
     };
 
-    expect(savedState.messages).toHaveLength(2);
-    expect(textOf(savedState.messages[0])).toContain("Please continue from the last result.");
-    expect(textOf(savedState.messages[1])).toContain("Please continue with the newest DM context.");
+    expect(directState.sessionMode).toBe("direct-chat");
+    expect(backgroundState.sessionMode).toBe("background-subagent");
+    expect(canonicalCharCount(directState.messages)).toBeLessThan(
+      canonicalCharCount(backgroundState.messages),
+    );
   });
 
-  it("preserves user-authored progress text even when background-subagent markers appear", async () => {
+  it("detects both Telegram and Feishu wrapper histories as direct-chat sessions", async () => {
     const engine = createContextSafeContextEngine();
-    const sessionId = "session-mode-background-preserve";
+    const telegramSessionId = "session-mode-direct-telegram";
+    const feishuSessionId = "session-mode-direct-feishu";
 
     await engine.assemble({
-      sessionId,
+      sessionId: telegramSessionId,
       messages: [
+        telegramDirectChatMetadataMessage(),
+        telegramDirectChatMetadataMessage(),
+      ],
+      tokenBudget: 512,
+    });
+    await engine.assemble({
+      sessionId: feishuSessionId,
+      messages: [
+        feishuDirectChatMetadataMessage(),
+        feishuDirectChatMetadataMessage(),
+      ],
+      tokenBudget: 512,
+    });
+
+    const telegramState = JSON.parse(fs.readFileSync(canonicalStatePath(telegramSessionId), "utf8")) as {
+      sessionMode?: string;
+      messages: Array<{ content?: unknown }>;
+    };
+    const feishuState = JSON.parse(fs.readFileSync(canonicalStatePath(feishuSessionId), "utf8")) as {
+      sessionMode?: string;
+      messages: Array<{ content?: unknown }>;
+    };
+
+    expect(telegramState.sessionMode).toBe("direct-chat");
+    expect(feishuState.sessionMode).toBe("direct-chat");
+    expect(telegramState.messages).toHaveLength(1);
+    expect(feishuState.messages).toHaveLength(1);
+    expect(textOf(telegramState.messages[0])).toContain("Telegram direct chat metadata");
+    expect(textOf(feishuState.messages[0])).toContain("Feishu direct chat metadata");
+  });
+
+  it("collapses background-subagent completion residue more aggressively than direct-chat history", async () => {
+    const engine = createContextSafeContextEngine();
+    const directSessionId = "session-mode-direct-noisy";
+    const backgroundSessionId = "session-mode-background-strong";
+
+    await engine.assemble({
+      sessionId: directSessionId,
+      messages: [
+        telegramDirectChatMetadataMessage(),
+        { role: "user", content: "Please continue from the last result." },
+      ],
+      tokenBudget: 512,
+    });
+    await engine.assemble({
+      sessionId: backgroundSessionId,
+      messages: [
+        backgroundProgressChatterMessage("status: still working"),
+        backgroundProgressChatterMessage("debug progress"),
+        backgroundProgressChatterMessage("running verification"),
+        backgroundCompletionResidueMessage(
+          "background-worker-1",
+          "reports/context-safe-background-worker-1-2026-03-24/index.md",
+        ),
+        backgroundCompletionResidueMessage(
+          "background-worker-2",
+          "reports/context-safe-background-worker-2-2026-03-24/index.md",
+        ),
         backgroundCompletionResidueMessage(
           "background-worker-final",
           "reports/context-safe-background-worker-final-2026-03-24/index.md",
         ),
-        { role: "user", content: "Status: still working, but keep going." },
-        { role: "user", content: "Running verification on the last failing case." },
       ],
       tokenBudget: 512,
     });
 
-    const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+    const directState = JSON.parse(fs.readFileSync(canonicalStatePath(directSessionId), "utf8")) as {
+      sessionMode?: string;
       messages: Array<{ content?: unknown }>;
     };
-    const transcript = savedState.messages.map((message) => textOf(message)).join("\n");
+    const backgroundState = JSON.parse(
+      fs.readFileSync(canonicalStatePath(backgroundSessionId), "utf8"),
+    ) as {
+      sessionMode?: string;
+      messages: Array<{ content?: unknown }>;
+    };
 
-    expect(transcript).toContain("Child task completion (success): background-worker-final");
-    expect(transcript).toContain("Status: still working, but keep going.");
-    expect(transcript).toContain("Running verification on the last failing case.");
+    expect(directState.sessionMode).toBe("direct-chat");
+    expect(backgroundState.sessionMode).toBe("background-subagent");
+    expect(backgroundState.messages.length).toBeLessThan(directState.messages.length);
+    expect(canonicalCharCount(backgroundState.messages)).toBeLessThan(
+      canonicalCharCount(directState.messages),
+    );
   });
 
-  it("preserves user-authored progress text even when acp-run headers appear", async () => {
+  it("collapses acp-run progress chatter while preserving the final verdict and report path", async () => {
     const engine = createContextSafeContextEngine();
-    const sessionId = "session-mode-acp-run-preserve";
+    const sessionId = "session-mode-acp-run";
 
     await engine.assemble({
       sessionId,
       messages: [
         acpRunHeaderMessage(),
-        { role: "user", content: "Debug progress: the reproduction is isolated now." },
-        { role: "user", content: "Running verification against the gateway transcript." },
+        acpRunProgressChatterMessage("status: still working"),
+        acpRunProgressChatterMessage("debug progress"),
         reportAwareSummaryMessage(),
       ],
       tokenBudget: 512,
     });
 
     const savedState = JSON.parse(fs.readFileSync(canonicalStatePath(sessionId), "utf8")) as {
+      sessionMode?: string;
       messages: Array<{ content?: unknown }>;
     };
-    const transcript = savedState.messages.map((message) => textOf(message)).join("\n");
+    const transcript = savedState.messages.map((message) => textOf(message)).join("\\n");
 
-    expect(transcript).toContain("Debug progress: the reproduction is isolated now.");
-    expect(transcript).toContain("Running verification against the gateway transcript.");
+    expect(savedState.sessionMode).toBe("acp-run");
     expect(transcript).toContain("Verdict: pass");
     expect(transcript).toContain("reports/context-safe-v2-canonical-policy-2026-03-24/index.md");
+    expect(transcript).not.toContain("status: still working");
+    expect(transcript).not.toContain("debug progress");
   });
 
   it("leaves non-matching messages unchanged when syncing canonical state", async () => {
@@ -1055,7 +1820,7 @@ function acpRunProgressChatterMessage(text: string) {
   };
 }
 
-function telegramDirectChatMetadataMessage(userText = "Please continue from the last result.") {
+function telegramDirectChatMetadataMessage() {
   return {
     role: "user",
     content: [
@@ -1066,7 +1831,25 @@ function telegramDirectChatMetadataMessage(userText = "Please continue from the 
           '{"channel":"telegram","chat_type":"direct","chat_id":"440811495","thread_id":"dm"}',
           "Sender (untrusted metadata)",
           '{"id":"440811495","display_name":"编程菜菜","username":"programcaicai"}',
-          userText,
+          "Please continue from the last result.",
+        ].join("\n"),
+      },
+    ],
+  };
+}
+
+function feishuDirectChatMetadataMessage() {
+  return {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: [
+          "会话信息（不可信元数据）",
+          '{"channel":"feishu","chat_type":"p2p","chat_id":"ou_123456","thread_id":"p2p"}',
+          "发送者（不可信元数据）",
+          '{"id":"ou_123456","display_name":"编程菜菜","user_id":"u_987654"}',
+          "请基于上一轮结果继续。",
         ].join("\n"),
       },
     ],

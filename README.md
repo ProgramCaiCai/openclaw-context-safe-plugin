@@ -18,28 +18,53 @@
 - 给 `web_fetch` 自动补默认安全参数：`maxChars=12000`
 - 在 `tool_result_persist` 阶段把超大的 `exec` / `bash` / `web_fetch` / `read` 结果改写成“小预览 + artifact 路径”
 - 把过大的 `details` 压缩成有界元数据，避免 transcript 被大对象撑爆
-- 在 canonical transcript 同步阶段折叠高频 runtime churn，当前覆盖 compaction 摘要、内部 child-result 注入块、Telegram 私聊元数据包装
+- 在 canonical transcript 同步阶段折叠高频 runtime churn，当前覆盖 compaction 摘要、内部 child-result 注入块、Telegram / Feishu 私聊元数据包装
 - 在 `contextEngine.assemble()` 阶段维护插件自有的 canonical context transcript，并在达到阈值后做一次可持续的上下文裁剪
 
 ### Canonical Context Transcript
 
 插件不会改写 OpenClaw 原始 transcript。它会为每个 `sessionId` 维护一份插件自有的 canonical context transcript，用来决定后续每轮真正送进模型的上下文。
 
-runtime churn slimming 发生在消息已经进入 transcript 之后的 canonical-state 同步阶段。它当前只做三类窄规则折叠：compaction summary、内部 child-result completion 注入块、Telegram 私聊元数据包装。它不会阻止 OpenClaw 核心继续生成这些事件，也不会改写完成判定真相源。
+runtime churn slimming 发生在消息已经进入 transcript 之后的 canonical-state 同步阶段。它当前只做三类窄规则折叠：compaction summary、内部 child-result completion 注入块、Telegram / Feishu 私聊元数据包装。它不会阻止 OpenClaw 核心继续生成这些事件，也不会改写完成判定真相源。
 
 当估算出来的 `pruneGain >= thresholdChars` 时，插件会把 canonical transcript 裁剪并持久化，因此后续请求看到的就是裁剪后的基线，而不是再次从原始历史重复计算同一批噪声。
 
 当前裁剪规则：
 
 - `pruneGain` 只统计可被裁剪的消息，受保护内容不计入
-- 保护会话最开头 5 条和最后 5 条消息
-- 保护这些窗口内关联的 `toolResult`
+- 不再使用固定 head/tail 窗口，改为从 transcript 尾部向前扩展一个语义化 preserved tail
+- preserved tail 默认要同时满足最小字符预算和最小 user/assistant 文本轮次数，并受 `keepTailMaxChars` 上限约束
+- 如果 canonical state 已经记录 `summaryBoundary.preservedTailHeadId`，tail 选择会尊重这个边界，不会把切点推进到边界之后
+- tail 切点会额外执行 API invariant 修正，避免保留段从孤立的 `toolResult` 开始，也避免丢掉共享同一 `message.id` 的 assistant fragment
 - 保护命中 basename 名单的 `read` 消息及其关联 `toolResult`
 - 保护名单按 basename、大小写不敏感匹配：
   `AGENTS.md` `HEARTBEAT.md` `IDENTITY.md` `MEMORY.md` `NOW.md`
   `SESSION-STATE.md` `SKILL.md` `SOUL.md` `TODAY.md` `TOOLS.md` `USER.md`
 - 非保护区里的 assistant `thinking` / `reasoning` block 会被删除
 - 非保护区里的旧 `toolResult` 会被替换成 `[pruned]`，并移除 `details`
+
+### Summary Boundary 与 Rehydration Bundle
+
+canonical state 现在会额外保存一组 compact/rehydration 相关字段：
+
+- `summaryBoundary`
+  - `lastSummarizedMessageId`
+  - `lastSummarizedAt`
+  - `lastSummarySource`
+  - `preservedTailHeadId`
+- `contextSafeSessionIndex`
+  - `goals`
+  - `recentConclusions`
+  - `openThreads`
+  - `activePlans`
+  - `protectedReads`
+  - `recentReports`
+  - `keyArtifacts`
+  - `recoveryHints`
+  - `summaryBoundary`
+  - `lastCompactReason`
+
+`assemble()` 注入的 synthetic session index 也不再只有轻量 goals/threads/artifacts。预算足够时，它会把 active plans、protected reads、recent reports、summary boundary 和最近 compact 原因一起带回上下文；预算变紧时，会自动退化到 compact/minimal 版本，只保留最关键的继续工作线索。
 
 ### 它为什么能省 Token
 
@@ -98,7 +123,7 @@ python3 scripts/install.py --dry-run
 
 ### 官方命令安装
 
-推荐的官方 CLI 流程是先打包插件，再安装生成的归档文件：
+推荐的官方命令流程也是先打包，再安装生成的归档：
 
 ```bash
 cd projects/openclaw-context-safe-plugin
@@ -157,6 +182,15 @@ canonical session state 也会保存在同一 artifact 根目录下：
 ~/.openclaw/artifacts/context-safe/session-state/<sessionId>.json
 ```
 
+如果需要排查某一轮 compact / assemble 为什么这样裁剪，优先看这个 session-state 文件里的：
+
+- `summaryBoundary`
+- `contextSafeSessionIndex`
+- `consecutiveCompactNoops`
+- `lastCompactReason`
+- `lastCompactFailedAt`
+- `contextSafeStats`
+
 ### Prune 配置
 
 默认配置：
@@ -166,6 +200,10 @@ canonical session state 也会保存在同一 artifact 根目录下：
   "prune": {
     "thresholdChars": 100000,
     "keepRecentToolResults": 5,
+    "keepTailMinChars": 6000,
+    "keepTailMinUserAssistantMessages": 2,
+    "keepTailMaxChars": 24000,
+    "keepTailRespectSummaryBoundary": true,
     "placeholder": "[pruned]"
   },
   "runtimeChurn": {
@@ -194,7 +232,11 @@ canonical session state 也会保存在同一 artifact 根目录下：
     "foldFirst": [
       "conversation info (untrusted metadata)",
       "sender (untrusted metadata)",
-      "telegram direct chat metadata"
+      "telegram direct chat metadata",
+      "feishu direct chat metadata",
+      "会话信息（不可信元数据）",
+      "发送者（不可信元数据）",
+      "飞书私聊元数据"
     ]
   }
 }
@@ -205,6 +247,10 @@ OpenClaw 配置示例：
 ```bash
 openclaw config set plugins.entries.context-safe.config.prune.thresholdChars 100000
 openclaw config set plugins.entries.context-safe.config.prune.keepRecentToolResults 5
+openclaw config set plugins.entries.context-safe.config.prune.keepTailMinChars 6000
+openclaw config set plugins.entries.context-safe.config.prune.keepTailMinUserAssistantMessages 2
+openclaw config set plugins.entries.context-safe.config.prune.keepTailMaxChars 24000
+openclaw config set plugins.entries.context-safe.config.prune.keepTailRespectSummaryBoundary true
 openclaw config set plugins.entries.context-safe.config.prune.placeholder "[pruned]"
 openclaw config set plugins.entries.context-safe.config.runtimeChurn.enabled true
 openclaw config set plugins.entries.context-safe.config.runtimeChurn.collapseCompactionSummaries true
@@ -223,6 +269,18 @@ canonical session state 会额外记录两组轻量观测字段：
 
 - `normalizedRuntimeChurnCount`：累计有多少条消息被 runtime churn slim 规则折叠过
 - `lastRuntimeChurnKinds`：最近一次命中的 churn 类型列表
+- `consecutiveCompactNoops` / `lastCompactReason` / `lastCompactFailedAt`：最近 compact 是否一直没有实质收益，和最近一次 compact/no-op 的原因
+
+### Compact No-op Circuit Breaker
+
+如果连续多次 `compact()` 都判断 canonical transcript 已经没有可压缩收益，插件会递增 `consecutiveCompactNoops`。达到阈值后，后续 compact 会直接返回 circuit-breaker reason，而不是继续重复做无意义 compact。
+
+排查建议：
+
+- 先查看 `~/.openclaw/artifacts/context-safe/session-state/<sessionId>.json`
+- 关注 `consecutiveCompactNoops`、`lastCompactReason`、`lastCompactFailedAt`
+- 如果原因是 `already minimal`，优先继续当前会话或等待更多新内容进入 canonical transcript，不要机械重复触发 compact
+- 如果你在调配置，优先检查 `thresholdChars` 与 semantic tail 参数是不是把可裁剪区保护得过大
 
 当某次同步真的发生折叠时，logger 会输出一条类似 `context-safe runtime-churn normalized=1 kinds=childCompletionInjection` 的信息。
 
@@ -233,6 +291,8 @@ pnpm exec vitest run --config vitest.config.ts
 pnpm exec tsc -p tsconfig.json --noEmit
 python3 -m py_compile scripts/install.py
 ```
+
+当前包没有单独的 `build` script。收尾验证时用全量 `pnpm test` 和 `pnpm exec tsc -p tsconfig.json --noEmit` 作为 TypeScript 侧的最终门禁。
 
 项目结构：
 
@@ -262,7 +322,7 @@ Important detail: official `v2026.3.8` does not expose an `excludeFromContext` p
 - adds a safe default for `web_fetch`: `maxChars=12000`
 - rewrites oversized `exec` / `bash` / `web_fetch` / `read` results during `tool_result_persist` into a short preview plus artifact path
 - compacts oversized `details` into bounded metadata
-- collapses high-churn runtime transcript noise during canonical-state sync, currently for compaction summaries, internal child-result injections, and Telegram direct-chat metadata wrappers
+- collapses high-churn runtime transcript noise during canonical-state sync, currently for compaction summaries, internal child-result injections, and Telegram / Feishu direct-chat metadata wrappers
 - maintains a plugin-owned canonical context transcript in `contextEngine.assemble()` and applies durable prune decisions once the threshold is crossed
 
 ### Canonical Context Transcript
@@ -271,12 +331,12 @@ The plugin does not rewrite OpenClaw's raw transcript. Instead, it keeps a plugi
 
 After runtime-churn normalization, the plugin also applies a narrow session-mode-aware slimming pass:
 
-- `direct-chat`: collapses repeated Telegram direct-chat metadata wrappers first
+- `direct-chat`: collapses repeated Telegram / Feishu direct-chat metadata wrappers first
 - `background-subagent`: drops progress chatter and keeps only the newest child-completion residue
 - `acp-run`: drops progress chatter while preserving the final verdict and `reports/...` artifact path
 - `default`: conservatively falls back to the existing behavior
 
-Runtime churn slimming happens only after messages have already entered the transcript, during canonical-state sync. The current rules are intentionally narrow: compaction summaries, internal child-result completion injections, and Telegram direct-chat metadata wrappers. This plugin does not stop OpenClaw core from emitting those events, and it does not redefine OpenClaw's completion truth source.
+Runtime churn slimming happens only after messages have already entered the transcript, during canonical-state sync. The current rules are intentionally narrow: compaction summaries, internal child-result completion injections, and Telegram / Feishu direct-chat metadata wrappers. This plugin does not stop OpenClaw core from emitting those events, and it does not redefine OpenClaw's completion truth source.
 
 When the estimated `pruneGain >= thresholdChars`, the plugin prunes and persists the canonical transcript. Future requests then start from the pruned baseline instead of recalculating against the same historical noise every turn.
 

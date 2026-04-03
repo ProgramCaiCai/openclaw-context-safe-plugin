@@ -1,6 +1,6 @@
 {
   "name": "context-safe",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Standalone context-safe plugin for OpenClaw.",
   "license": "MIT",
   "repository": {
@@ -25,6 +25,7 @@
     "scripts/install.py",
     "openclaw.plugin.json",
     "README.md",
+    "src/api-invariants.ts",
     "src/artifact-dir.ts",
     "src/canonical-session-state.ts",
     "src/config.ts",
@@ -32,6 +33,8 @@
     "src/hooks.ts",
     "src/report-aware-policy.ts",
     "src/runtime-churn-policy.ts",
+    "src/session-index.ts",
+    "src/session-observability.ts",
     "src/tool-result-notices.ts",
     "src/tool-result-persist.ts",
     "src/tool-result-policy.ts"

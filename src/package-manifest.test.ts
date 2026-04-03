@@ -19,6 +19,7 @@ describe("package manifest", () => {
     const packageJson = readPackageJson();
 
     expect(packageJson.files).toContain("scripts/install.py");
+    expect(packageJson.files).toContain("src/api-invariants.ts");
     expect(packageJson.scripts).toMatchObject({
       "install:plugin": "python3 scripts/install.py",
       "install:plugin:link": "python3 scripts/install.py --link",
@@ -44,15 +45,18 @@ describe("package manifest", () => {
     expect(linkDryRun).not.toContain("$ npm pack --json --pack-destination");
   });
 
-  it("publishes every runtime-imported source file needed by src/context-engine.ts", () => {
-    const packageJson = readPackageJson();
+  it("publishes all src/context-engine.ts runtime-imported source files", () => {
     const contextEngineSource = fs.readFileSync(path.join(repoRoot, "src", "context-engine.ts"), "utf8");
-    const runtimeImports = Array.from(
-      contextEngineSource.matchAll(/from "(\.\/[^"]+\.js)";/g),
-      ([, specifier]) => path.posix.join("src", specifier.replace(/^\.\//, "").replace(/\.js$/, ".ts")),
+    const packageJson = readPackageJson();
+    const actualRuntimeImports = Array.from(
+      contextEngineSource.matchAll(/from "(\.\/[^\"]+\.js)";/g),
+      ([, specifier]) => specifier,
+    );
+    const expectedPublishedFiles = actualRuntimeImports.map((specifier) =>
+      path.posix.join("src", specifier.replace(/^\.\//, "").replace(/\.js$/, ".ts")),
     );
 
-    expect(packageJson.files).toEqual(expect.arrayContaining(runtimeImports));
+    expect(packageJson.files).toEqual(expect.arrayContaining(expectedPublishedFiles));
   });
 
   it("declares the prune and runtime-churn config schema in openclaw.plugin.json", () => {
@@ -87,6 +91,25 @@ describe("package manifest", () => {
           type: "integer",
           minimum: 0,
           default: 5,
+        },
+        keepTailMinChars: {
+          type: "integer",
+          minimum: 1,
+          default: 6000,
+        },
+        keepTailMinUserAssistantMessages: {
+          type: "integer",
+          minimum: 1,
+          default: 2,
+        },
+        keepTailMaxChars: {
+          type: "integer",
+          minimum: 1,
+          default: 24000,
+        },
+        keepTailRespectSummaryBoundary: {
+          type: "boolean",
+          default: true,
         },
         placeholder: {
           type: "string",

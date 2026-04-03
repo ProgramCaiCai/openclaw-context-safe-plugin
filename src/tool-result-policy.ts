@@ -1,3 +1,5 @@
+import { preserveApiInvariants } from "./api-invariants.js";
+import { type CanonicalSessionSummaryBoundary } from "./canonical-session-state.js";
 import {
   DEFAULT_RETENTION_TIER_COMPRESSIBLE,
   DEFAULT_RETENTION_TIER_CRITICAL,
@@ -29,6 +31,10 @@ const PROTECTED_READ_BASENAMES = new Set([
   "tools.md",
   "user.md",
 ]);
+const READ_TOOL_RESULT_BUDGET_MULTIPLIER = 1.2;
+const WEB_FETCH_TOOL_RESULT_BUDGET_MULTIPLIER = 0.8;
+const SHELL_TOOL_RESULT_BUDGET_MULTIPLIER = 0.65;
+const EXTERNALIZED_TOOL_RESULT_BUDGET_MULTIPLIER = 0.5;
 
 export type ContextSafeMessage = {
   role?: string;
@@ -39,6 +45,10 @@ export type ContextSafeMessage = {
   tool_name?: string;
   toolCallId?: string;
   tool_call_id?: string;
+  id?: string;
+  messageId?: string;
+  message_id?: string;
+  message?: unknown;
   [key: string]: unknown;
 };
 
@@ -81,9 +91,24 @@ export function estimatePruneGain(params: {
   messages: ContextSafeMessage[];
   thresholdChars: number;
   keepRecentToolResults: number;
+  keepTailMinChars?: number;
+  keepTailMinUserAssistantMessages?: number;
+  keepTailMaxChars?: number;
+  keepTailRespectSummaryBoundary?: boolean;
   placeholder: string;
+  summaryBoundary?: CanonicalSessionSummaryBoundary;
 }): number {
-  const protectedIndexes = findProtectedMessageIndexes(params.messages, params.keepRecentToolResults);
+  const protectedIndexes = findProtectedMessageIndexes(
+    params.messages,
+    params.keepRecentToolResults,
+    params.summaryBoundary,
+    {
+      keepTailMinChars: params.keepTailMinChars,
+      keepTailMinUserAssistantMessages: params.keepTailMinUserAssistantMessages,
+      keepTailMaxChars: params.keepTailMaxChars,
+      keepTailRespectSummaryBoundary: params.keepTailRespectSummaryBoundary,
+    },
+  );
   let gain = 0;
 
   for (let i = 0; i < params.messages.length; i++) {
@@ -109,11 +134,17 @@ export function applyCanonicalPrune(params: {
   messages: ContextSafeMessage[];
   thresholdChars: number;
   keepRecentToolResults: number;
+  keepTailMinChars?: number;
+  keepTailMinUserAssistantMessages?: number;
+  keepTailMaxChars?: number;
+  keepTailRespectSummaryBoundary?: boolean;
   placeholder: string;
+  summaryBoundary?: CanonicalSessionSummaryBoundary;
 }): {
   messages: ContextSafeMessage[];
   pruneGain: number;
   pruned: boolean;
+  preservedTailStart?: number;
 } {
   const pruneGain = estimatePruneGain(params);
   if (pruneGain < params.thresholdChars) {
@@ -121,10 +152,38 @@ export function applyCanonicalPrune(params: {
       messages: params.messages,
       pruneGain,
       pruned: false,
+      preservedTailStart: calculatePreservedTailStart({
+        messages: params.messages,
+        keepRecentToolResults: params.keepRecentToolResults,
+        keepTailMinChars: params.keepTailMinChars,
+        keepTailMinUserAssistantMessages: params.keepTailMinUserAssistantMessages,
+        keepTailMaxChars: params.keepTailMaxChars,
+        keepTailRespectSummaryBoundary: params.keepTailRespectSummaryBoundary,
+        summaryBoundary: params.summaryBoundary,
+      }),
     };
   }
 
-  const protectedIndexes = findProtectedMessageIndexes(params.messages, params.keepRecentToolResults);
+  const preservedTailStart = calculatePreservedTailStart({
+    messages: params.messages,
+    keepRecentToolResults: params.keepRecentToolResults,
+    keepTailMinChars: params.keepTailMinChars,
+    keepTailMinUserAssistantMessages: params.keepTailMinUserAssistantMessages,
+    keepTailMaxChars: params.keepTailMaxChars,
+    keepTailRespectSummaryBoundary: params.keepTailRespectSummaryBoundary,
+    summaryBoundary: params.summaryBoundary,
+  });
+  const protectedIndexes = findProtectedMessageIndexes(
+    params.messages,
+    params.keepRecentToolResults,
+    params.summaryBoundary,
+    {
+      keepTailMinChars: params.keepTailMinChars,
+      keepTailMinUserAssistantMessages: params.keepTailMinUserAssistantMessages,
+      keepTailMaxChars: params.keepTailMaxChars,
+      keepTailRespectSummaryBoundary: params.keepTailRespectSummaryBoundary,
+    },
+  );
   const messages = params.messages.map((message, index) => {
     if (protectedIndexes.has(index)) {
       return message;
@@ -142,19 +201,111 @@ export function applyCanonicalPrune(params: {
     messages,
     pruneGain,
     pruned: true,
+    preservedTailStart,
   };
+}
+
+export function calculatePreservedTailStart(params: {
+  messages: ContextSafeMessage[];
+  keepRecentToolResults: number;
+  keepTailMinChars?: number;
+  keepTailMinUserAssistantMessages?: number;
+  keepTailMaxChars?: number;
+  keepTailRespectSummaryBoundary?: boolean;
+  summaryBoundary?: CanonicalSessionSummaryBoundary;
+}): number | undefined {
+  if (params.messages.length === 0) {
+    return undefined;
+  }
+
+  if (
+    params.keepTailMinChars !== undefined &&
+    params.keepTailMinUserAssistantMessages !== undefined &&
+    params.keepTailMaxChars !== undefined
+  ) {
+    return calculateSemanticPreservedTailStart({
+      messages: params.messages,
+      keepRecentToolResults: params.keepRecentToolResults,
+      keepTailMinChars: params.keepTailMinChars,
+      keepTailMinUserAssistantMessages: params.keepTailMinUserAssistantMessages,
+      keepTailMaxChars: params.keepTailMaxChars,
+      keepTailRespectSummaryBoundary: params.keepTailRespectSummaryBoundary,
+      summaryBoundary: params.summaryBoundary,
+    });
+  }
+
+  if (params.keepRecentToolResults <= 0) {
+    return undefined;
+  }
+
+  let startIndex = Math.max(0, params.messages.length - Math.max(0, params.keepRecentToolResults));
+  const summaryBoundaryFloor =
+    params.keepTailRespectSummaryBoundary === false
+      ? undefined
+      : findSummaryBoundaryFloorIndex(params.messages, params.summaryBoundary);
+  if (summaryBoundaryFloor !== undefined) {
+    startIndex = Math.min(startIndex, summaryBoundaryFloor);
+  }
+  return preserveApiInvariants(params.messages, startIndex);
+}
+
+function calculateSemanticPreservedTailStart(params: {
+  messages: ContextSafeMessage[];
+  keepRecentToolResults: number;
+  keepTailMinChars: number;
+  keepTailMinUserAssistantMessages: number;
+  keepTailMaxChars: number;
+  keepTailRespectSummaryBoundary?: boolean;
+  summaryBoundary?: CanonicalSessionSummaryBoundary;
+}): number | undefined {
+  const floor =
+    params.keepTailRespectSummaryBoundary === false
+      ? undefined
+      : findSummaryBoundaryFloorIndex(params.messages, params.summaryBoundary);
+  const minIndex = floor ?? 0;
+  const fixedStart = Math.max(
+    minIndex,
+    Math.max(0, params.messages.length - Math.max(1, params.keepRecentToolResults)),
+  );
+  let startIndex = fixedStart;
+  let totalChars = 0;
+  let userAssistantCount = 0;
+
+  for (let i = fixedStart; i < params.messages.length; i++) {
+    totalChars += estimatePreservedTailChars(params.messages[i]);
+    userAssistantCount += isUserAssistantTailMessage(params.messages[i]) ? 1 : 0;
+  }
+
+  for (let i = fixedStart - 1; i >= minIndex; i--) {
+    if (
+      totalChars >= params.keepTailMinChars &&
+      userAssistantCount >= params.keepTailMinUserAssistantMessages
+    ) {
+      break;
+    }
+
+    const nextMessage = params.messages[i];
+    const nextChars = totalChars + estimatePreservedTailChars(nextMessage);
+    if (startIndex < params.messages.length && nextChars > params.keepTailMaxChars) {
+      break;
+    }
+
+    startIndex = i;
+    totalChars = nextChars;
+    userAssistantCount += isUserAssistantTailMessage(nextMessage) ? 1 : 0;
+  }
+
+  if (floor !== undefined) {
+    startIndex = Math.min(startIndex, floor);
+  }
+  return preserveApiInvariants(params.messages, startIndex);
 }
 
 export function applyContextToolResultPolicy(params: {
   messages: ContextSafeMessage[];
   contextWindowTokens: number;
 }): { messages: ContextSafeMessage[]; estimatedChars: number } {
-  const contextBudgetChars = Math.max(
-    MIN_CONTEXT_BUDGET_CHARS,
-    Math.floor(
-      params.contextWindowTokens * CHARS_PER_TOKEN_ESTIMATE * CONTEXT_INPUT_HEADROOM_RATIO,
-    ),
-  );
+  const contextBudgetChars = resolveContextBudgetChars(params.contextWindowTokens);
   const maxSingleToolResultChars = Math.max(
     MIN_SINGLE_TOOL_RESULT_CHARS,
     Math.floor(
@@ -171,7 +322,10 @@ export function applyContextToolResultPolicy(params: {
     if (!isToolResultMessage(message)) {
       continue;
     }
-    messages[i] = truncateToolResultToChars(message, maxSingleToolResultChars);
+    messages[i] = truncateToolResultToChars(
+      message,
+      resolveToolResultBudgetChars(message, maxSingleToolResultChars),
+    );
   }
 
   let estimatedChars = estimateContextChars(messages);
@@ -179,8 +333,12 @@ export function applyContextToolResultPolicy(params: {
     return { messages, estimatedChars };
   }
 
-  for (let i = 0; i < messages.length && estimatedChars > contextBudgetChars; i++) {
-    const message = messages[i];
+  for (const candidateIndex of rankCompactionCandidates(messages)) {
+    if (estimatedChars <= contextBudgetChars) {
+      break;
+    }
+
+    const message = messages[candidateIndex];
     if (!isToolResultMessage(message)) {
       continue;
     }
@@ -198,7 +356,7 @@ export function applyContextToolResultPolicy(params: {
     if (after >= before) {
       continue;
     }
-    messages[i] = compacted;
+    messages[candidateIndex] = compacted;
     estimatedChars -= before - after;
   }
 
@@ -208,24 +366,45 @@ export function applyContextToolResultPolicy(params: {
   };
 }
 
+export function resolveContextBudgetChars(contextWindowTokens: number): number {
+  return Math.max(
+    MIN_CONTEXT_BUDGET_CHARS,
+    Math.floor(contextWindowTokens * CHARS_PER_TOKEN_ESTIMATE * CONTEXT_INPUT_HEADROOM_RATIO),
+  );
+}
+
 function isToolResultMessage(message: ContextSafeMessage): boolean {
   return message.role === "toolResult" || message.role === "tool" || message.type === "toolResult";
 }
 
-function findProtectedMessageIndexes(messages: ContextSafeMessage[], protectedWindowSize: number): Set<number> {
+function findProtectedMessageIndexes(
+  messages: ContextSafeMessage[],
+  protectedWindowSize: number,
+  summaryBoundary?: CanonicalSessionSummaryBoundary,
+  tailConfig?: {
+    keepTailMinChars?: number;
+    keepTailMinUserAssistantMessages?: number;
+    keepTailMaxChars?: number;
+    keepTailRespectSummaryBoundary?: boolean;
+  },
+): Set<number> {
   const protectedIndexes = new Set<number>();
   const protectedToolCallIds = new Set<string>();
-  const windowSize = Math.max(0, protectedWindowSize);
-  const headStop = Math.min(messages.length, windowSize);
-  const tailStart = Math.max(0, messages.length - windowSize);
+  const tailStart = calculatePreservedTailStart({
+    messages,
+    keepRecentToolResults: protectedWindowSize,
+    keepTailMinChars: tailConfig?.keepTailMinChars,
+    keepTailMinUserAssistantMessages: tailConfig?.keepTailMinUserAssistantMessages,
+    keepTailMaxChars: tailConfig?.keepTailMaxChars,
+    keepTailRespectSummaryBoundary: tailConfig?.keepTailRespectSummaryBoundary,
+    summaryBoundary,
+  });
 
-  for (let i = 0; i < headStop; i++) {
-    protectedIndexes.add(i);
-    addProtectedToolCallIds(protectedToolCallIds, messages[i]);
-  }
-  for (let i = tailStart; i < messages.length; i++) {
-    protectedIndexes.add(i);
-    addProtectedToolCallIds(protectedToolCallIds, messages[i]);
+  if (tailStart !== undefined) {
+    for (let i = tailStart; i < messages.length; i++) {
+      protectedIndexes.add(i);
+      addProtectedToolCallIds(protectedToolCallIds, messages[i]);
+    }
   }
 
   for (let i = 0; i < messages.length; i++) {
@@ -239,6 +418,20 @@ function findProtectedMessageIndexes(messages: ContextSafeMessage[], protectedWi
   for (let i = 0; i < messages.length; i++) {
     const toolCallId = getMessageToolCallId(messages[i]);
     if (toolCallId && protectedToolCallIds.has(toolCallId) && isToolResultMessage(messages[i])) {
+      protectedIndexes.add(i);
+      continue;
+    }
+    const content = messages[i].content;
+    if (protectedIndexes.has(i) || !Array.isArray(content)) {
+      continue;
+    }
+    const hasProtectedToolUse = content.some(
+      (block: unknown) =>
+        isRecord(block) &&
+        block.type === "tool_use" &&
+        protectedToolCallIds.has(asTrimmedString(block.id) ?? ""),
+    );
+    if (hasProtectedToolUse) {
       protectedIndexes.add(i);
     }
   }
@@ -269,8 +462,28 @@ function collectMessageText(message: ContextSafeMessage): string {
   return textBlocksOf(message).join("\n");
 }
 
+function isUserAssistantTailMessage(message: ContextSafeMessage): boolean {
+  if (message.role === "user") {
+    return collectMessageText(message).trim().length > 0;
+  }
+  if (message.role !== "assistant") {
+    return false;
+  }
+  if (collectMessageText(message).trim().length > 0) {
+    return true;
+  }
+  if (!Array.isArray(message.content)) {
+    return false;
+  }
+  return message.content.some((block) => isRecord(block) && !isThinkingLikeBlock(block));
+}
+
 function getToolResultText(message: ContextSafeMessage): string {
   return textBlocksOf(message).join("\n");
+}
+
+function estimatePreservedTailChars(message: ContextSafeMessage): number {
+  return estimateMessageChars(message) + estimateThinkingChars(message);
 }
 
 function estimateUnknownChars(value: unknown): number {
@@ -368,6 +581,34 @@ function getToolCallIdFromValue(value: unknown): string | undefined {
     asTrimmedString(value.toolCallId) ??
     asTrimmedString(value.tool_call_id) ??
     asTrimmedString(value.id)
+  );
+}
+
+function findSummaryBoundaryFloorIndex(
+  messages: ContextSafeMessage[],
+  summaryBoundary?: CanonicalSessionSummaryBoundary,
+): number | undefined {
+  if (
+    summaryBoundary?.lastSummarySource !== "compact" &&
+    summaryBoundary?.lastSummarySource !== "manual"
+  ) {
+    return undefined;
+  }
+  const headId = asTrimmedString(summaryBoundary?.preservedTailHeadId);
+  if (!headId) {
+    return undefined;
+  }
+  const index = messages.findIndex((message) => resolveContextSafeMessageId(message) === headId);
+  return index >= 0 ? index : undefined;
+}
+
+function resolveContextSafeMessageId(message: ContextSafeMessage): string | undefined {
+  return (
+    asTrimmedString(message.id) ??
+    asTrimmedString(message.messageId) ??
+    asTrimmedString(message.message_id) ??
+    getMessageToolCallId(message) ??
+    (isRecord(message.message) ? asTrimmedString(message.message.id) : undefined)
   );
 }
 
@@ -482,15 +723,27 @@ function shortenContextToken(value: string, maxChars: number): string {
 function getToolResultMeta(message: ContextSafeMessage): {
   toolName?: string;
   toolCallId?: string;
+  resultMode?: "artifact" | "inline" | "inline-fallback";
 } {
   const toolNameRaw = asTrimmedString(message.toolName) ?? asTrimmedString(message.tool_name);
   const toolCallIdRaw =
     asTrimmedString(message.toolCallId) ?? asTrimmedString(message.tool_call_id);
+  const contextSafeMeta =
+    isRecord(message.details) && isRecord(message.details.contextSafe)
+      ? message.details.contextSafe
+      : undefined;
+  const resultMode =
+    contextSafeMeta?.resultMode === "artifact" ||
+    contextSafeMeta?.resultMode === "inline" ||
+    contextSafeMeta?.resultMode === "inline-fallback"
+      ? contextSafeMeta.resultMode
+      : undefined;
   return {
     toolName: toolNameRaw ? shortenContextToken(toolNameRaw.replace(/\s+/g, " "), 32) : undefined,
     toolCallId: toolCallIdRaw
       ? shortenContextToken(toolCallIdRaw.replace(/\s+/g, " "), 24)
       : undefined,
+    resultMode,
   };
 }
 
@@ -673,4 +926,57 @@ function truncateToolResultToChars(
     message,
     truncateTextToBudget(rawText, maxChars, `\n${fittedNotice}`),
   );
+}
+
+function resolveToolResultBudgetChars(message: ContextSafeMessage, baseBudgetChars: number): number {
+  const meta = getToolResultMeta(message);
+  const toolName = meta.toolName?.toLowerCase();
+  let multiplier = 1;
+
+  if (meta.resultMode === "artifact" || meta.resultMode === "inline-fallback") {
+    multiplier = EXTERNALIZED_TOOL_RESULT_BUDGET_MULTIPLIER;
+  } else if (toolName === "read") {
+    multiplier = READ_TOOL_RESULT_BUDGET_MULTIPLIER;
+  } else if (toolName === "web_fetch") {
+    multiplier = WEB_FETCH_TOOL_RESULT_BUDGET_MULTIPLIER;
+  } else if (toolName === "exec" || toolName === "bash") {
+    multiplier = SHELL_TOOL_RESULT_BUDGET_MULTIPLIER;
+  }
+
+  return Math.max(MIN_SINGLE_TOOL_RESULT_CHARS, Math.floor(baseBudgetChars * multiplier));
+}
+
+function rankCompactionCandidates(messages: ContextSafeMessage[]): number[] {
+  return messages
+    .map((message, index) => ({
+      index,
+      priority: isToolResultMessage(message) ? resolveCompactionPriority(message) : Number.NEGATIVE_INFINITY,
+    }))
+    .filter((entry) => entry.priority > Number.NEGATIVE_INFINITY)
+    .sort((left, right) => {
+      if (right.priority !== left.priority) {
+        return right.priority - left.priority;
+      }
+      return left.index - right.index;
+    })
+    .map((entry) => entry.index);
+}
+
+function resolveCompactionPriority(message: ContextSafeMessage): number {
+  const meta = getToolResultMeta(message);
+  const toolName = meta.toolName?.toLowerCase();
+
+  if (meta.resultMode === "artifact" || meta.resultMode === "inline-fallback") {
+    return 4;
+  }
+  if (toolName === "exec" || toolName === "bash") {
+    return 3;
+  }
+  if (toolName === "web_fetch") {
+    return 2;
+  }
+  if (toolName === "read") {
+    return 0;
+  }
+  return 1;
 }

@@ -4,6 +4,10 @@ import {
   DEFAULT_COLLAPSE_COMPACTION_SUMMARIES,
   DEFAULT_COLLAPSE_DIRECT_CHAT_METADATA,
   DEFAULT_KEEP_RECENT_TOOL_RESULTS,
+  DEFAULT_KEEP_TAIL_MAX_CHARS,
+  DEFAULT_KEEP_TAIL_MIN_CHARS,
+  DEFAULT_KEEP_TAIL_MIN_USER_ASSISTANT_MESSAGES,
+  DEFAULT_KEEP_TAIL_RESPECT_SUMMARY_BOUNDARY,
   DEFAULT_PRUNE_THRESHOLD_CHARS,
   DEFAULT_RETENTION_TIERS_ENABLED,
   DEFAULT_RETENTION_TIER_COMPRESSIBLE,
@@ -25,6 +29,10 @@ describe("context-safe config", () => {
       prune: {
         thresholdChars: 100_000,
         keepRecentToolResults: 5,
+        keepTailMinChars: DEFAULT_KEEP_TAIL_MIN_CHARS,
+        keepTailMinUserAssistantMessages: DEFAULT_KEEP_TAIL_MIN_USER_ASSISTANT_MESSAGES,
+        keepTailMaxChars: DEFAULT_KEEP_TAIL_MAX_CHARS,
+        keepTailRespectSummaryBoundary: DEFAULT_KEEP_TAIL_RESPECT_SUMMARY_BOUNDARY,
         placeholder: "[pruned]",
       },
       runtimeChurn: {
@@ -32,6 +40,25 @@ describe("context-safe config", () => {
         collapseCompactionSummaries: true,
         collapseChildCompletionInjections: true,
         collapseDirectChatMetadata: true,
+      },
+    });
+  });
+
+  it("normalizes semantic preserved-tail settings when provided", () => {
+    expect(
+      normalizeContextSafeEngineConfig({
+        prune: {
+          keepTailMinChars: 6_000,
+          keepTailMinUserAssistantMessages: 4,
+          keepTailMaxChars: 24_000,
+        },
+      }),
+    ).toMatchObject({
+      prune: {
+        keepTailMinChars: 6_000,
+        keepTailMinUserAssistantMessages: 4,
+        keepTailMaxChars: 24_000,
+        keepTailRespectSummaryBoundary: true,
       },
     });
   });
@@ -50,6 +77,10 @@ describe("context-safe config", () => {
       prune: {
         thresholdChars: 100_000,
         keepRecentToolResults: 5,
+        keepTailMinChars: DEFAULT_KEEP_TAIL_MIN_CHARS,
+        keepTailMinUserAssistantMessages: DEFAULT_KEEP_TAIL_MIN_USER_ASSISTANT_MESSAGES,
+        keepTailMaxChars: DEFAULT_KEEP_TAIL_MAX_CHARS,
+        keepTailRespectSummaryBoundary: DEFAULT_KEEP_TAIL_RESPECT_SUMMARY_BOUNDARY,
         placeholder: "[pruned]",
       },
       runtimeChurn: {
@@ -78,6 +109,10 @@ describe("context-safe config", () => {
       prune: {
         thresholdChars: 100_000,
         keepRecentToolResults: 5,
+        keepTailMinChars: DEFAULT_KEEP_TAIL_MIN_CHARS,
+        keepTailMinUserAssistantMessages: DEFAULT_KEEP_TAIL_MIN_USER_ASSISTANT_MESSAGES,
+        keepTailMaxChars: DEFAULT_KEEP_TAIL_MAX_CHARS,
+        keepTailRespectSummaryBoundary: DEFAULT_KEEP_TAIL_RESPECT_SUMMARY_BOUNDARY,
         placeholder: "[pruned]",
       },
       runtimeChurn: {
@@ -95,7 +130,7 @@ describe("context-safe config", () => {
     });
   });
 
-  it("ships bilingual retention-tier defaults for summaries and progress chatter", () => {
+  it("ships bilingual retention-tier defaults for report summaries and progress chatter", () => {
     expect(DEFAULT_RETENTION_TIER_CRITICAL).toEqual(
       expect.arrayContaining(["please", "report:", "请", "结论：", "报告：", "任务：", "状态："]),
     );

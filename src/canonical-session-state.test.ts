@@ -58,6 +58,12 @@ describe("canonical session state", () => {
       thresholdChars: 50_000,
       keepRecentToolResults: 2,
       placeholder: "[pruned]",
+      summaryBoundary: {
+        lastSummarizedMessageId: "msg-3",
+        lastSummarizedAt: "2026-04-02T12:00:00.000Z",
+        lastSummarySource: "compact",
+        preservedTailHeadId: "msg-8",
+      },
       lastPrunedAt: "2026-03-20T12:01:00.000Z",
       lastPruneSource: "assemble",
       lastPruneGain: 12_345,
@@ -122,6 +128,32 @@ describe("canonical session state", () => {
 
     expect(loaded.needsRebuild).toBe(false);
     expect(loaded.state).toEqual(legacyState as unknown as CanonicalSessionState);
+  });
+
+  it("normalizes missing summary-boundary fields to an empty object on save", async () => {
+    const state: CanonicalSessionState = {
+      version: 1,
+      sessionId: "session-empty-boundary",
+      sourceMessageCount: 1,
+      configSnapshot: {
+        thresholdChars: 50_000,
+        keepRecentToolResults: 2,
+        placeholder: "[pruned]",
+      },
+      messages: [{ role: "assistant", content: "hello" }],
+      updatedAt: "2026-03-20T12:00:00.000Z",
+      messageCount: 1,
+      toolResultCount: 0,
+      thresholdChars: 50_000,
+      keepRecentToolResults: 2,
+      placeholder: "[pruned]",
+    };
+
+    await saveCanonicalSessionState(state);
+    const loaded = await loadCanonicalSessionState("session-empty-boundary");
+
+    expect(loaded.needsRebuild).toBe(false);
+    expect(loaded.state?.summaryBoundary).toEqual({});
   });
 
   it("falls back to rebuild when the state file contains invalid json", async () => {
